@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { View, StyleSheet, Animated, Dimensions, Image, Text } from 'react-native';
+import { View, StyleSheet, Animated, Dimensions, Text } from 'react-native';
 import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
 
 const { width, height } = Dimensions.get('window');
@@ -10,36 +10,27 @@ export default function RootLayout() {
   const [showSplash, setShowSplash] = useState(true);
   const [videoEnded, setVideoEnded] = useState(false);
   const fadeAnim = useRef(new Animated.Value(1)).current;
-  const logoScale = useRef(new Animated.Value(0.8)).current;
-  const logoOpacity = useRef(new Animated.Value(0)).current;
+  const textOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    // Show logo animation after video
+    // Show loading text after video ends
     if (videoEnded) {
-      Animated.parallel([
-        Animated.timing(logoOpacity, {
-          toValue: 1,
-          duration: 800,
-          useNativeDriver: true,
-        }),
-        Animated.spring(logoScale, {
-          toValue: 1,
-          tension: 50,
-          friction: 7,
-          useNativeDriver: true,
-        }),
-      ]).start();
+      Animated.timing(textOpacity, {
+        toValue: 1,
+        duration: 600,
+        useNativeDriver: true,
+      }).start();
 
-      // Fade out splash after logo animation
+      // Fade out splash after brief pause
       setTimeout(() => {
         Animated.timing(fadeAnim, {
           toValue: 0,
-          duration: 600,
+          duration: 800,
           useNativeDriver: true,
         }).start(() => {
           setShowSplash(false);
         });
-      }, 1500);
+      }, 1200);
     }
   }, [videoEnded]);
 
@@ -49,13 +40,13 @@ export default function RootLayout() {
     }
   };
 
-  // Fallback: if video fails to load, show splash anyway and transition
+  // Fallback: if video fails to load, transition after timeout
   useEffect(() => {
     const timeout = setTimeout(() => {
       if (!videoEnded) {
         setVideoEnded(true);
       }
-    }, 8000); // Max 8 seconds for splash
+    }, 10000); // Max 10 seconds for splash
 
     return () => clearTimeout(timeout);
   }, []);
@@ -67,31 +58,22 @@ export default function RootLayout() {
       {showSplash ? (
         <Animated.View style={[styles.splashContainer, { opacity: fadeAnim }]}>
           {!videoEnded ? (
-            <Video
-              source={require('../assets/splash-video.mp4')}
-              style={styles.splashVideo}
-              resizeMode={ResizeMode.COVER}
-              shouldPlay
-              isLooping={false}
-              isMuted={false}
-              onPlaybackStatusUpdate={handleVideoPlaybackStatus}
-              onError={() => setVideoEnded(true)}
-            />
-          ) : (
-            <View style={styles.logoContainer}>
-              <Animated.Image
-                source={require('../assets/images/lyricsinmotion-logo.jpg')}
-                style={[
-                  styles.splashLogo,
-                  {
-                    opacity: logoOpacity,
-                    transform: [{ scale: logoScale }],
-                  },
-                ]}
-                resizeMode="contain"
+            <View style={styles.videoContainer}>
+              <Video
+                source={require('../assets/splash-video.mp4')}
+                style={styles.splashVideo}
+                resizeMode={ResizeMode.CONTAIN}
+                shouldPlay
+                isLooping={false}
+                isMuted={false}
+                onPlaybackStatusUpdate={handleVideoPlaybackStatus}
+                onError={() => setVideoEnded(true)}
               />
-              <Animated.Text style={[styles.loadingText, { opacity: logoOpacity }]}>
-                Loading your creative studio...
+            </View>
+          ) : (
+            <View style={styles.transitionContainer}>
+              <Animated.Text style={[styles.loadingText, { opacity: textOpacity }]}>
+                Initializing Creative Studio...
               </Animated.Text>
             </View>
           )}
@@ -100,7 +82,7 @@ export default function RootLayout() {
         <Stack
           screenOptions={{
             headerShown: false,
-            contentStyle: { backgroundColor: '#0a0a12' },
+            contentStyle: { backgroundColor: 'transparent' },
             animation: 'fade_from_bottom',
           }}
         />
@@ -112,7 +94,7 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0a0a12',
+    backgroundColor: '#000',
   },
   splashContainer: {
     ...StyleSheet.absoluteFillObject,
@@ -120,26 +102,28 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  videoContainer: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000',
+  },
   splashVideo: {
     width: width,
     height: height,
   },
-  logoContainer: {
+  transitionContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#0a0a12',
   },
-  splashLogo: {
-    width: width * 0.85,
-    height: height * 0.4,
-    maxWidth: 400,
-    maxHeight: 300,
-  },
   loadingText: {
-    marginTop: 30,
-    fontSize: 14,
+    fontSize: 16,
     color: '#8b5cf6',
     letterSpacing: 1,
+    fontWeight: '500',
   },
 });
