@@ -573,6 +573,147 @@ async def generate_video(project_id: str):
         "status": "video_ready"
     }
 
+
+# ==================== GOOGLE DRIVE BACKUP ENDPOINTS ====================
+
+class DriveUploadRequest(BaseModel):
+    filename: str
+    content: str
+    cloud_backup: bool = False  # Upload to EXPORTS folder
+    dual_backup: bool = False   # Upload to MULTI folder
+
+class DriveStatusResponse(BaseModel):
+    configured: bool
+    exports_folder_id: str
+    multi_folder_id: str
+
+@api_router.get("/drive/status")
+async def get_drive_status():
+    """Check if Google Drive integration is configured"""
+    service = get_google_drive_service()
+    return {
+        "configured": service is not None,
+        "exports_folder_id": GDRIVE_EXPORTS_FOLDER_ID,
+        "multi_folder_id": GDRIVE_MULTI_FOLDER_ID,
+    }
+
+@api_router.post("/drive/upload")
+async def upload_to_drive(request: DriveUploadRequest):
+    """
+    Upload storyboard export to Google Drive folders.
+    - cloud_backup: Upload to EXPORTS folder
+    - dual_backup: Upload to MULTI folder  
+    """
+    results = {
+        "local_saved": True,
+        "cloud_backup": None,
+        "dual_backup": None,
+        "errors": []
+    }
+    
+    # Always save to database as backup
+    export_record = {
+        "id": str(uuid.uuid4()),
+        "filename": request.filename,
+        "content": request.content,
+        "created_at": datetime.utcnow(),
+        "cloud_uploaded": False,
+        "dual_uploaded": False,
+    }
+    await db.storyboard_exports.insert_one(export_record)
+    
+    # Upload to Google Drive if requested
+    if request.cloud_backup or request.dual_backup:
+        service = get_google_drive_service()
+        
+        if not service:
+            results["errors"].append("Google Drive not configured. Please add service account credentials.")
+            return results
+        
+        try:
+            from googleapiclient.http import MediaIoBaseUpload
+            
+            # Prepare file content
+            file_content = io.BytesIO(request.content.encode('utf-8'))
+            media = MediaIoBaseUpload(file_content, mimetype='text/plain', resumable=True)
+            
+            # Upload to EXPORTS folder (CLOUD backup)
+            if request.cloud_backup:
+                try:
+                    file_metadata = {
+                        'name': request.filename,
+                        'parents': [GDRIVE_EXPORTS_FOLDER_ID]
+                    }
+                    file_content.seek(0)
+                    media = MediaIoBaseUpload(file_content, mimetype='text/plain', resumable=True)
+                    
+                    uploaded_file = service.files().create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields='id, name, webViewLink'
+                    ).execute()
+                    
+                    results["cloud_backup"] = {
+                        "success": True,
+                        "file_id": uploaded_file.get('id'),
+                        "file_name": uploaded_file.get('name'),
+                        "link": uploaded_file.get('webViewLink'),
+                        "folder": "EXPORTS"
+                    }
+                    
+                    # Update database record
+                    await db.storyboard_exports.update_one(
+                        {"id": export_record["id"]},
+                        {"$set": {"cloud_uploaded": True, "cloud_file_id": uploaded_file.get('id')}}
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"EXPORTS folder upload failed: {e}")
+                    results["cloud_backup"] = {"success": False, "error": str(e)}
+                    results["errors"].append(f"CLOUD backup failed: {str(e)}")
+            
+            # Upload to MULTI folder (DUAL backup)
+            if request.dual_backup:
+                try:
+                    file_metadata = {
+                        'name': request.filename,
+                        'parents': [GDRIVE_MULTI_FOLDER_ID]
+                    }
+                    file_content.seek(0)
+                    media = MediaIoBaseUpload(file_content, mimetype='text/plain', resumable=True)
+                    
+                    uploaded_file = service.files().create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields='id, name, webViewLink'
+                    ).execute()
+                    
+                    results["dual_backup"] = {
+                        "success": True,
+                        "file_id": uploaded_file.get('id'),
+                        "file_name": uploaded_file.get('name'),
+                        "link": uploaded_file.get('webViewLink'),
+                        "folder": "MULTI"
+                    }
+                    
+                    # Update database record
+                    await db.storyboard_exports.update_one(
+                        {"id": export_record["id"]},
+                        {"$set": {"dual_uploaded": True, "dual_file_id": uploaded_file.get('id')}}
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"MULTI folder upload failed: {e}")
+                    results["dual_backup"] = {"success": False, "error": str(e)}
+                    results["errors"].append(f"DUAL backup failed: {str(e)}")
+                    
+        except Exception as e:
+            logger.error(f"Google Drive upload error: {e}")
+            results["errors"].append(str(e))
+    
+    return results
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
