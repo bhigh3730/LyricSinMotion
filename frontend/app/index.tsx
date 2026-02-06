@@ -8,6 +8,7 @@ import {
   Animated,
   Dimensions,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -27,6 +28,7 @@ export default function HomeScreen() {
   const [buttonAnim] = useState(new Animated.Value(0));
   const [listAnim] = useState(new Animated.Value(0));
   const [pulseAnim] = useState(new Animated.Value(1));
+  const [glowAnim] = useState(new Animated.Value(0));
 
   useEffect(() => {
     fetchProjects();
@@ -54,13 +56,29 @@ export default function HomeScreen() {
     Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
-          toValue: 1.05,
+          toValue: 1.03,
           duration: 1500,
           useNativeDriver: true,
         }),
         Animated.timing(pulseAnim, {
           toValue: 1,
           duration: 1500,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+
+    // Glow animation
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(glowAnim, {
+          toValue: 1,
+          duration: 2000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(glowAnim, {
+          toValue: 0,
+          duration: 2000,
           useNativeDriver: true,
         }),
       ])
@@ -100,13 +118,13 @@ export default function HomeScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Animated Background */}
       <LinearGradient
-        colors={['#0a0a12', '#12121f', '#1a1a2e']}
+        colors={['#0a0a12', '#0d0d1a', '#12121f', '#1a1a2e']}
         style={StyleSheet.absoluteFill}
       />
       
       {/* Floating particles effect */}
       <View style={styles.particlesContainer}>
-        {[...Array(20)].map((_, i) => (
+        {[...Array(25)].map((_, i) => (
           <View
             key={i}
             style={[
@@ -114,9 +132,10 @@ export default function HomeScreen() {
               {
                 left: Math.random() * width,
                 top: Math.random() * height,
-                opacity: Math.random() * 0.5 + 0.1,
-                width: Math.random() * 4 + 1,
-                height: Math.random() * 4 + 1,
+                opacity: Math.random() * 0.4 + 0.1,
+                width: Math.random() * 3 + 1,
+                height: Math.random() * 3 + 1,
+                backgroundColor: i % 3 === 0 ? '#8b5cf6' : i % 3 === 1 ? '#06b6d4' : '#ec4899',
               },
             ]}
           />
@@ -138,7 +157,7 @@ export default function HomeScreen() {
                 {
                   translateY: logoAnim.interpolate({
                     inputRange: [0, 1],
-                    outputRange: [-50, 0],
+                    outputRange: [-30, 0],
                   }),
                 },
               ],
@@ -146,20 +165,26 @@ export default function HomeScreen() {
           ]}
         >
           <View style={styles.logoContainer}>
-            <LinearGradient
-              colors={['#8b5cf6', '#6366f1', '#4f46e5']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.logoGradient}
-            >
-              <Ionicons name="videocam" size={48} color="#fff" />
-            </LinearGradient>
-            <View style={styles.logoGlow} />
+            <Image
+              source={require('../assets/images/lyricsinmotion-logo.jpg')}
+              style={styles.logoImage}
+              resizeMode="contain"
+            />
+            <Animated.View 
+              style={[
+                styles.logoGlow,
+                {
+                  opacity: glowAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.1, 0.3],
+                  }),
+                }
+              ]} 
+            />
           </View>
           
-          <Text style={styles.appTitle}>LyricMotion</Text>
-          <Text style={styles.appVersion}>v.1.0</Text>
           <Text style={styles.appTagline}>AI-Powered Music Video Creator</Text>
+          <Text style={styles.appSubtitle}>Transform lyrics into cinematic visuals</Text>
         </Animated.View>
 
         {/* Create Button */}
@@ -186,7 +211,7 @@ export default function HomeScreen() {
             activeOpacity={0.8}
           >
             <LinearGradient
-              colors={['#8b5cf6', '#6366f1']}
+              colors={['#8b5cf6', '#6366f1', '#4f46e5']}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.createButtonGradient}
@@ -215,6 +240,7 @@ export default function HomeScreen() {
           ]}
         >
           <View style={styles.sectionHeader}>
+            <Ionicons name="folder-open" size={20} color="#8b5cf6" />
             <Text style={styles.sectionTitle}>Your Projects</Text>
             <View style={styles.sectionLine} />
           </View>
@@ -222,10 +248,13 @@ export default function HomeScreen() {
           {loading ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color="#8b5cf6" />
+              <Text style={styles.loadingText}>Loading projects...</Text>
             </View>
           ) : projects.length === 0 ? (
             <View style={styles.emptyState}>
-              <Ionicons name="film-outline" size={64} color="#3f3f5a" />
+              <View style={styles.emptyIconContainer}>
+                <Ionicons name="film-outline" size={48} color="#8b5cf6" />
+              </View>
               <Text style={styles.emptyText}>No projects yet</Text>
               <Text style={styles.emptySubtext}>
                 Create your first AI-powered music video
@@ -240,7 +269,7 @@ export default function HomeScreen() {
                 activeOpacity={0.7}
               >
                 <LinearGradient
-                  colors={['rgba(139, 92, 246, 0.1)', 'rgba(99, 102, 241, 0.05)']}
+                  colors={['rgba(139, 92, 246, 0.15)', 'rgba(99, 102, 241, 0.08)']}
                   style={styles.projectCardGradient}
                 >
                   <View style={styles.projectCardContent}>
@@ -263,7 +292,7 @@ export default function HomeScreen() {
                       <View
                         style={[
                           styles.statusBadge,
-                          { backgroundColor: getStatusColor(project.status) + '20' },
+                          { backgroundColor: getStatusColor(project.status) + '25' },
                         ]}
                       >
                         <View
@@ -289,6 +318,12 @@ export default function HomeScreen() {
             ))
           )}
         </Animated.View>
+
+        {/* Footer info */}
+        <View style={styles.footer}>
+          <Text style={styles.footerText}>Personal Creative Studio</Text>
+          <Text style={styles.footerSubtext}>Powered by AI</Text>
+        </View>
       </ScrollView>
 
       {/* Settings Button */}
@@ -296,7 +331,12 @@ export default function HomeScreen() {
         style={[styles.settingsButton, { top: insets.top + 10 }]}
         onPress={() => router.push('/settings')}
       >
-        <Ionicons name="settings-outline" size={24} color="#8b5cf6" />
+        <LinearGradient
+          colors={['rgba(139, 92, 246, 0.2)', 'rgba(99, 102, 241, 0.1)']}
+          style={styles.settingsButtonGradient}
+        >
+          <Ionicons name="settings-outline" size={22} color="#8b5cf6" />
+        </LinearGradient>
       </TouchableOpacity>
     </View>
   );
@@ -313,7 +353,6 @@ const styles = StyleSheet.create({
   },
   particle: {
     position: 'absolute',
-    backgroundColor: '#8b5cf6',
     borderRadius: 10,
   },
   scrollView: {
@@ -325,58 +364,51 @@ const styles = StyleSheet.create({
   },
   logoSection: {
     alignItems: 'center',
-    marginTop: 40,
-    marginBottom: 30,
+    marginTop: 20,
+    marginBottom: 24,
   },
   logoContainer: {
     position: 'relative',
-    marginBottom: 16,
+    marginBottom: 12,
   },
-  logoGradient: {
-    width: 100,
-    height: 100,
-    borderRadius: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
+  logoImage: {
+    width: width * 0.75,
+    height: 140,
+    maxWidth: 320,
+    borderRadius: 16,
   },
   logoGlow: {
     position: 'absolute',
-    width: 120,
-    height: 120,
-    borderRadius: 60,
+    width: width * 0.85,
+    height: 180,
+    borderRadius: 90,
     backgroundColor: '#8b5cf6',
-    opacity: 0.2,
-    top: -10,
-    left: -10,
-  },
-  appTitle: {
-    fontSize: 36,
-    fontWeight: '800',
-    color: '#fff',
-    letterSpacing: 2,
-  },
-  appVersion: {
-    fontSize: 12,
-    color: '#8b5cf6',
-    marginTop: 4,
-    letterSpacing: 1,
+    top: -20,
+    left: -20,
+    zIndex: -1,
   },
   appTagline: {
-    fontSize: 14,
-    color: '#6b7280',
+    fontSize: 15,
+    color: '#a78bfa',
     marginTop: 8,
+    fontWeight: '500',
+  },
+  appSubtitle: {
+    fontSize: 12,
+    color: '#6b7280',
+    marginTop: 4,
   },
   createButtonContainer: {
-    marginBottom: 40,
+    marginBottom: 32,
   },
   createButton: {
     borderRadius: 16,
     overflow: 'hidden',
     shadowColor: '#8b5cf6',
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    elevation: 10,
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 12,
   },
   createButtonGradient: {
     flexDirection: 'row',
@@ -390,7 +422,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#fff',
-    letterSpacing: 1,
+    letterSpacing: 0.5,
   },
   projectsSection: {
     flex: 1,
@@ -398,11 +430,11 @@ const styles = StyleSheet.create({
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 20,
-    gap: 12,
+    marginBottom: 16,
+    gap: 10,
   },
   sectionTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
     color: '#fff',
   },
@@ -412,22 +444,35 @@ const styles = StyleSheet.create({
     backgroundColor: '#2d2d44',
   },
   loadingContainer: {
-    paddingVertical: 60,
+    paddingVertical: 50,
     alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    color: '#6b7280',
+    fontSize: 14,
   },
   emptyState: {
     alignItems: 'center',
-    paddingVertical: 60,
+    paddingVertical: 50,
+  },
+  emptyIconContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(139, 92, 246, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
   },
   emptyText: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#6b7280',
-    marginTop: 16,
+    color: '#9ca3af',
   },
   emptySubtext: {
     fontSize: 14,
-    color: '#4b5563',
+    color: '#6b7280',
     marginTop: 8,
   },
   projectCard: {
@@ -435,7 +480,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: 'rgba(139, 92, 246, 0.2)',
+    borderColor: 'rgba(139, 92, 246, 0.25)',
   },
   projectCardGradient: {
     padding: 16,
@@ -445,16 +490,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   projectIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
+    width: 50,
+    height: 50,
+    borderRadius: 14,
     backgroundColor: 'rgba(139, 92, 246, 0.2)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   projectInfo: {
     flex: 1,
-    marginLeft: 12,
+    marginLeft: 14,
   },
   projectName: {
     fontSize: 16,
@@ -479,7 +524,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 5,
     borderRadius: 12,
     gap: 6,
   },
@@ -492,13 +537,30 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
+  footer: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    marginTop: 16,
+  },
+  footerText: {
+    fontSize: 12,
+    color: '#4b5563',
+  },
+  footerSubtext: {
+    fontSize: 10,
+    color: '#374151',
+    marginTop: 2,
+  },
   settingsButton: {
     position: 'absolute',
-    right: 20,
+    right: 16,
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
+  settingsButtonGradient: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: 'rgba(139, 92, 246, 0.1)',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,

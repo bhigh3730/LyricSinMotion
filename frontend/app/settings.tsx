@@ -8,21 +8,12 @@ import {
   Animated,
   Switch,
   Linking,
+  Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-
-interface SettingItem {
-  id: string;
-  title: string;
-  subtitle?: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  type: 'toggle' | 'link' | 'info';
-  value?: boolean;
-  onPress?: () => void;
-}
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -77,35 +68,21 @@ export default function SettingsScreen() {
       ],
     },
     {
-      title: 'AI Settings',
+      title: 'AI Configuration',
       items: [
         {
-          id: 'model',
-          title: 'AI Model',
-          subtitle: 'Claude Sonnet 4.5 (via Emergent)',
+          id: 'storyboard-model',
+          title: 'Storyboard AI',
+          subtitle: 'Claude Sonnet 4.5 (Active)',
           icon: 'hardware-chip-outline' as const,
           type: 'info' as const,
         },
         {
           id: 'video-api',
-          title: 'Video Generation API',
-          subtitle: 'Not configured (MOCK mode)',
+          title: 'Video Generation',
+          subtitle: 'Demo Mode (Personal Use)',
           icon: 'videocam-outline' as const,
           type: 'info' as const,
-        },
-      ],
-    },
-    {
-      title: 'Notifications',
-      items: [
-        {
-          id: 'notifications',
-          title: 'Push Notifications',
-          subtitle: 'Get notified when video is ready',
-          icon: 'notifications-outline' as const,
-          type: 'toggle' as const,
-          value: notifications,
-          onToggle: setNotifications,
         },
       ],
     },
@@ -115,31 +92,16 @@ export default function SettingsScreen() {
         {
           id: 'version',
           title: 'Version',
-          subtitle: 'LyricMotion v.1.0',
+          subtitle: 'LyricSiNMotion v.1.0',
           icon: 'information-circle-outline' as const,
           type: 'info' as const,
         },
         {
-          id: 'support',
-          title: 'Support & Feedback',
-          subtitle: 'Get help or report issues',
-          icon: 'help-circle-outline' as const,
-          type: 'link' as const,
-          onPress: () => Linking.openURL('mailto:support@lyricmotion.app'),
-        },
-        {
-          id: 'privacy',
-          title: 'Privacy Policy',
-          icon: 'shield-outline' as const,
-          type: 'link' as const,
-          onPress: () => {},
-        },
-        {
-          id: 'terms',
-          title: 'Terms of Service',
-          icon: 'document-text-outline' as const,
-          type: 'link' as const,
-          onPress: () => {},
+          id: 'purpose',
+          title: 'Purpose',
+          subtitle: 'Artist Creator Portfolio Tool',
+          icon: 'brush-outline' as const,
+          type: 'info' as const,
         },
       ],
     },
@@ -221,20 +183,13 @@ export default function SettingsScreen() {
               colors={['rgba(139, 92, 246, 0.2)', 'rgba(99, 102, 241, 0.1)']}
               style={styles.appInfoGradient}
             >
-              <View style={styles.appLogoContainer}>
-                <LinearGradient
-                  colors={['#8b5cf6', '#6366f1']}
-                  style={styles.appLogo}
-                >
-                  <Ionicons name="videocam" size={32} color="#fff" />
-                </LinearGradient>
-              </View>
-              <Text style={styles.appName}>LyricMotion</Text>
-              <Text style={styles.appDescription}>
-                AI-Powered Music Video Creator
-              </Text>
+              <Image
+                source={require('../assets/images/lyricsinmotion-logo.jpg')}
+                style={styles.appLogo}
+                resizeMode="contain"
+              />
               <View style={styles.appBadge}>
-                <Text style={styles.appBadgeText}>v.1.0 BETA</Text>
+                <Text style={styles.appBadgeText}>PERSONAL CREATIVE STUDIO</Text>
               </View>
             </LinearGradient>
           </View>
@@ -251,17 +206,16 @@ export default function SettingsScreen() {
             </View>
           ))}
 
-          {/* Integration Notice */}
-          <View style={styles.integrationNotice}>
-            <Ionicons name="information-circle" size={24} color="#f59e0b" />
-            <View style={styles.integrationNoticeContent}>
-              <Text style={styles.integrationNoticeTitle}>
-                Video Generation API Required
+          {/* Feature Notice */}
+          <View style={styles.featureNotice}>
+            <Ionicons name="rocket" size={24} color="#10b981" />
+            <View style={styles.featureNoticeContent}>
+              <Text style={styles.featureNoticeTitle}>
+                AI Storyboard Generation Active
               </Text>
-              <Text style={styles.integrationNoticeText}>
-                To generate actual videos, integrate with Runway ML, Luma AI, or
-                fal.ai. Currently running in MOCK mode with AI storyboard
-                generation.
+              <Text style={styles.featureNoticeText}>
+                Real AI-powered storyboards using Claude Sonnet. Video output is
+                in demo mode for personal portfolio creation.
               </Text>
             </View>
           </View>
@@ -269,10 +223,10 @@ export default function SettingsScreen() {
           {/* Credits */}
           <View style={styles.credits}>
             <Text style={styles.creditsText}>
-              Powered by Claude AI via Emergent
+              Built for Creative Expression
             </Text>
             <Text style={styles.copyrightText}>
-              © 2025 LyricMotion. All rights reserved.
+              LyricSiNMotion - Personal Use Edition
             </Text>
           </View>
         </Animated.View>
@@ -321,29 +275,13 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(139, 92, 246, 0.3)',
   },
   appInfoGradient: {
-    padding: 24,
+    padding: 20,
     alignItems: 'center',
-  },
-  appLogoContainer: {
-    marginBottom: 16,
   },
   appLogo: {
-    width: 72,
-    height: 72,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  appName: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#fff',
-    letterSpacing: 1,
-  },
-  appDescription: {
-    fontSize: 14,
-    color: '#9ca3af',
-    marginTop: 4,
+    width: '100%',
+    height: 120,
+    borderRadius: 12,
   },
   appBadge: {
     marginTop: 16,
@@ -353,16 +291,16 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   appBadgeText: {
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '700',
     color: '#c4b5fd',
-    letterSpacing: 1,
+    letterSpacing: 1.5,
   },
   section: {
     marginBottom: 24,
   },
   sectionTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: '#6b7280',
     marginBottom: 12,
@@ -415,28 +353,28 @@ const styles = StyleSheet.create({
     color: '#6b7280',
     marginTop: 2,
   },
-  integrationNotice: {
+  featureNotice: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
     borderRadius: 16,
     padding: 16,
     marginBottom: 24,
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderColor: 'rgba(16, 185, 129, 0.3)',
     gap: 12,
   },
-  integrationNoticeContent: {
+  featureNoticeContent: {
     flex: 1,
   },
-  integrationNoticeTitle: {
+  featureNoticeTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#f59e0b',
+    color: '#10b981',
     marginBottom: 4,
   },
-  integrationNoticeText: {
+  featureNoticeText: {
     fontSize: 13,
-    color: '#fbbf24',
+    color: '#34d399',
     lineHeight: 18,
   },
   credits: {
