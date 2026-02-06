@@ -13,9 +13,34 @@ import base64
 import json
 import tempfile
 import asyncio
+import io
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Google Drive Configuration
+GOOGLE_SERVICE_ACCOUNT_FILE = ROOT_DIR / 'google-service-account.json'
+GDRIVE_EXPORTS_FOLDER_ID = "1S-rhyyGgl6O-5g1d4sZzKiDBO9xoQsZJ"  # EXPORTS folder
+GDRIVE_MULTI_FOLDER_ID = "1mr9CrmjTijaLEKtNf2WtuVNSSnetQ3am"    # MULTI folder
+
+def get_google_drive_service():
+    """Initialize Google Drive service using service account credentials"""
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        
+        if not GOOGLE_SERVICE_ACCOUNT_FILE.exists():
+            return None
+        
+        credentials = service_account.Credentials.from_service_account_file(
+            str(GOOGLE_SERVICE_ACCOUNT_FILE),
+            scopes=['https://www.googleapis.com/auth/drive.file']
+        )
+        service = build('drive', 'v3', credentials=credentials)
+        return service
+    except Exception as e:
+        logging.error(f"Failed to initialize Google Drive: {e}")
+        return None
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
