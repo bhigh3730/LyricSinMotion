@@ -14,6 +14,7 @@ import {
   ImageBackground,
   Modal,
   Share,
+  PermissionsAndroid,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -21,6 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import * as MediaLibrary from 'expo-media-library';
 import { useCacheStore, StoryboardScene } from '../store/cacheStore';
 import { useProjectStore } from '../store/projectStore';
 import axios from 'axios';
