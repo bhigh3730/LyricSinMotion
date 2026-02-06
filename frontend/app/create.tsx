@@ -210,6 +210,75 @@ export default function StoryboardCreator() {
     setStep(3);
   };
 
+  // Request storage permissions for Android
+  const requestStoragePermission = async () => {
+    if (Platform.OS === 'android') {
+      try {
+        const { status } = await MediaLibrary.requestPermissionsAsync();
+        return status === 'granted';
+      } catch (err) {
+        console.error('Permission error:', err);
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Save file to Downloads folder (Android native)
+  const saveToDownloads = async (filename: string, content: string): Promise<string | null> => {
+    try {
+      if (Platform.OS === 'android') {
+        // Request permissions
+        const hasPermission = await requestStoragePermission();
+        if (!hasPermission) {
+          Alert.alert('Permission Required', 'Storage permission is needed to save files');
+          return null;
+        }
+
+        // First save to cache directory
+        const cacheUri = `${FileSystem.cacheDirectory}${filename}`;
+        await FileSystem.writeAsStringAsync(cacheUri, content, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+
+        // Use SAF (Storage Access Framework) to save to user-selected location
+        const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        
+        if (permissions.granted) {
+          // User selected a directory, create file there
+          const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+            permissions.directoryUri,
+            filename,
+            'text/plain'
+          );
+          
+          await FileSystem.writeAsStringAsync(fileUri, content, {
+            encoding: FileSystem.EncodingType.UTF8,
+          });
+          
+          return fileUri;
+        } else {
+          // Fallback: Save to document directory and share
+          const docUri = `${FileSystem.documentDirectory}${filename}`;
+          await FileSystem.writeAsStringAsync(docUri, content, {
+            encoding: FileSystem.EncodingType.UTF8,
+          });
+          return docUri;
+        }
+      } else {
+        // iOS - save to document directory
+        const docUri = `${FileSystem.documentDirectory}${filename}`;
+        await FileSystem.writeAsStringAsync(docUri, content, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        return docUri;
+      }
+    } catch (error) {
+      console.error('Save to downloads error:', error);
+      return null;
+    }
+  };
+
   const handleExport = async () => {
     if (!currentSession || currentSession.storyboardScenes.length === 0) {
       Alert.alert('Error', 'No storyboard scenes to export');
@@ -221,47 +290,93 @@ export default function StoryboardCreator() {
 
     try {
       const exportText = exportStoryboardAsText(projectName || 'Untitled');
-      const filename = `${(projectName || 'Untitled').replace(/\\s+/g, '_')}_storyboard_${Date.now()}.txt`;
-      const filePath = `${FileSystem.documentDirectory}${filename}`;
+      const sanitizedName = (projectName || 'Untitled').replace(/[^a-zA-Z0-9]/g, '_');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const filename = `${sanitizedName}_storyboard_${timestamp}.txt`;
 
-      // Always save locally first
-      await FileSystem.writeAsStringAsync(filePath, exportText);
+      // Save to local storage using native Android method
+      const savedPath = await saveToDownloads(filename, exportText);
+      
+      let localSaveSuccess = false;
+      let localPath = '';
 
-      // Upload to backend/Google Drive
-      const uploadResponse = await axios.post(`${API_URL}/api/drive/upload`, {
-        filename,
-        content: exportText,
-        cloud_backup: cloudBackup,
-        dual_backup: dualBackup,
-      });
+      if (savedPath) {
+        localSaveSuccess = true;
+        localPath = savedPath;
+      } else {
+        // Fallback: save to app's document directory
+        const fallbackPath = `${FileSystem.documentDirectory}${filename}`;
+        await FileSystem.writeAsStringAsync(fallbackPath, exportText, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        localSaveSuccess = true;
+        localPath = fallbackPath;
+      }
+
+      // Upload to backend/Google Drive if selected
+      let uploadResponse: any = { local_saved: localSaveSuccess, errors: [] };
+      
+      try {
+        uploadResponse = await axios.post(`${API_URL}/api/drive/upload`, {
+          filename,
+          content: exportText,
+          cloud_backup: cloudBackup,
+          dual_backup: dualBackup,
+        });
+        uploadResponse.local_saved = localSaveSuccess;
+      } catch (uploadError) {
+        console.error('Cloud upload error:', uploadError);
+        uploadResponse.errors.push('Cloud backup failed');
+      }
 
       setExportResult({
-        ...uploadResponse.data,
-        localPath: filePath,
+        ...uploadResponse,
+        localPath,
         filename,
+        localSaveSuccess,
       });
 
-      // Share locally if available
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(filePath, {
-          mimeType: 'text/plain',
-          dialogTitle: 'Export Storyboard Prompts',
-        });
-      }
+      // Offer to share the file
+      if (localPath && await Sharing.isAvailableAsync()) {
+        Alert.alert(
+          'Export Complete',
+          `File saved: ${filename}\n\nWould you like to share or open the file?`,
+          [
+            { text: 'Done', style: 'cancel' },
+            {
+              text: 'Share/Open',
+              onPress: async () => {
+                try {
+                  await Sharing.shareAsync(localPath, {
+                    mimeType: 'text/plain',
+                    dialogTitle: 'Storyboard Export',
+                    UTI: 'public.plain-text',
+                  });
+                } catch (shareError) {
+                  console.error('Share error:', shareError);
+                }
+              },
+            },
+          ]
+        );
+      } else {
+        // Show success message
+        let message = localSaveSuccess 
+          ? `✓ Saved to: ${filename}` 
+          : 'Local save failed';
+        
+        if (uploadResponse.cloud_backup?.success) {
+          message += '\n✓ Uploaded to EXPORTS folder';
+        }
+        if (uploadResponse.dual_backup?.success) {
+          message += '\n✓ Uploaded to MULTI folder';
+        }
+        if (uploadResponse.errors?.length > 0) {
+          message += '\n\nWarnings: ' + uploadResponse.errors.join(', ');
+        }
 
-      // Show success message
-      let message = 'Storyboard exported to local storage!';
-      if (uploadResponse.data.cloud_backup?.success) {
-        message += '\n✓ Uploaded to EXPORTS folder';
+        Alert.alert('Export Complete', message);
       }
-      if (uploadResponse.data.dual_backup?.success) {
-        message += '\n✓ Uploaded to MULTI folder';
-      }
-      if (uploadResponse.data.errors?.length > 0) {
-        message += '\n\nWarnings: ' + uploadResponse.data.errors.join(', ');
-      }
-
-      Alert.alert('Export Complete', message);
 
     } catch (error: any) {
       console.error('Export error:', error);
