@@ -54,8 +54,14 @@ export default function StoryboardCreator() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [editingScene, setEditingScene] = useState<StoryboardScene | null>(null);
   const [showSceneModal, setShowSceneModal] = useState(false);
-  const [showExportModal, setShowExportModal] = useState(false);
-  const [step, setStep] = useState(1); // 1: Setup, 2: Storyboard Editor
+  const [step, setStep] = useState(1); // 1: Setup, 2: Storyboard Editor, 3: Export
+
+  // Export options
+  const [cloudBackup, setCloudBackup] = useState(false);
+  const [dualBackup, setDualBackup] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<any>(null);
+  const [driveConfigured, setDriveConfigured] = useState(false);
 
   // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -63,6 +69,9 @@ export default function StoryboardCreator() {
   useEffect(() => {
     // Start auto-save
     startAutoSave();
+    
+    // Check Drive configuration
+    checkDriveStatus();
     
     // Initialize from cache if exists
     if (currentSession) {
@@ -100,6 +109,15 @@ export default function StoryboardCreator() {
     });
   }, [projectName, lyrics, theme, mode, blockDuration, step]);
 
+  const checkDriveStatus = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/drive/status`);
+      setDriveConfigured(response.data.configured);
+    } catch (error) {
+      setDriveConfigured(false);
+    }
+  };
+
   const handleAutoBreakdown = async () => {
     if (!lyrics.trim()) {
       Alert.alert('Error', 'Please enter lyrics first');
@@ -108,7 +126,6 @@ export default function StoryboardCreator() {
 
     setIsGenerating(true);
     try {
-      // Call AI to break down lyrics into 8-second blocks
       const response = await axios.post(`${API_URL}/api/breakdown-lyrics`, {
         lyrics: lyrics.trim(),
         theme: theme.trim(),
@@ -117,7 +134,6 @@ export default function StoryboardCreator() {
 
       const { scenes } = response.data;
       
-      // Clear existing scenes and add new ones
       createNewSession('auto-breakdown');
       updateSession({
         projectName,
@@ -176,48 +192,80 @@ export default function StoryboardCreator() {
     if (!editingScene) return;
 
     if (editingScene.id) {
-      // Update existing
       updateScene(editingScene.id, editingScene);
     } else {
-      // Add new
       addScene(editingScene);
     }
     setShowSceneModal(false);
     setEditingScene(null);
   };
 
-  const handleExportStoryboard = async () => {
+  const handleProceedToExport = () => {
+    if (!currentSession || currentSession.storyboardScenes.length === 0) {
+      Alert.alert('Error', 'No storyboard scenes to export');
+      return;
+    }
+    setStep(3);
+  };
+
+  const handleExport = async () => {
     if (!currentSession || currentSession.storyboardScenes.length === 0) {
       Alert.alert('Error', 'No storyboard scenes to export');
       return;
     }
 
-    const exportText = exportStoryboardAsText(projectName || 'Untitled');
-    const filename = `${(projectName || 'Untitled').replace(/\s+/g, '_')}_storyboard_${Date.now()}.txt`;
-    const filePath = `${FileSystem.documentDirectory}${filename}`;
+    setIsExporting(true);
+    setExportResult(null);
 
     try {
+      const exportText = exportStoryboardAsText(projectName || 'Untitled');
+      const filename = `${(projectName || 'Untitled').replace(/\\s+/g, '_')}_storyboard_${Date.now()}.txt`;
+      const filePath = `${FileSystem.documentDirectory}${filename}`;
+
+      // Always save locally first
       await FileSystem.writeAsStringAsync(filePath, exportText);
-      
+
+      // Upload to backend/Google Drive
+      const uploadResponse = await axios.post(`${API_URL}/api/drive/upload`, {
+        filename,
+        content: exportText,
+        cloud_backup: cloudBackup,
+        dual_backup: dualBackup,
+      });
+
+      setExportResult({
+        ...uploadResponse.data,
+        localPath: filePath,
+        filename,
+      });
+
+      // Share locally if available
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(filePath, {
           mimeType: 'text/plain',
           dialogTitle: 'Export Storyboard Prompts',
         });
-      } else {
-        // Fallback to share API
-        await Share.share({
-          message: exportText,
-          title: `${projectName} - Storyboard Export`,
-        });
       }
-    } catch (error) {
+
+      // Show success message
+      let message = 'Storyboard exported to local storage!';
+      if (uploadResponse.data.cloud_backup?.success) {
+        message += '\n✓ Uploaded to EXPORTS folder';
+      }
+      if (uploadResponse.data.dual_backup?.success) {
+        message += '\n✓ Uploaded to MULTI folder';
+      }
+      if (uploadResponse.data.errors?.length > 0) {
+        message += '\n\nWarnings: ' + uploadResponse.data.errors.join(', ');
+      }
+
+      Alert.alert('Export Complete', message);
+
+    } catch (error: any) {
       console.error('Export error:', error);
-      // Fallback to share
-      await Share.share({
-        message: exportText,
-        title: `${projectName} - Storyboard Export`,
-      });
+      Alert.alert('Export Error', error?.message || 'Failed to export storyboard');
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -242,6 +290,28 @@ export default function StoryboardCreator() {
       Alert.alert('Error', 'Failed to save project');
     }
   };
+
+  // Radio Button Component
+  const RadioButton = ({ selected, onPress, label, sublabel, icon, disabled }: any) => (
+    <TouchableOpacity
+      style={[styles.radioButton, selected && styles.radioButtonSelected, disabled && styles.radioButtonDisabled]}
+      onPress={onPress}
+      disabled={disabled}
+      activeOpacity={0.7}
+    >
+      <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
+        {selected && <View style={styles.radioInner} />}
+      </View>
+      <View style={styles.radioContent}>
+        <View style={styles.radioHeader}>
+          <Ionicons name={icon} size={18} color={selected ? '#10b981' : '#8b5cf6'} />
+          <Text style={[styles.radioLabel, selected && styles.radioLabelSelected]}>{label}</Text>
+        </View>
+        <Text style={styles.radioSublabel}>{sublabel}</Text>
+      </View>
+      {selected && <Ionicons name="checkmark-circle" size={22} color="#10b981" />}
+    </TouchableOpacity>
+  );
 
   const renderSetupStep = () => (
     <Animated.View style={[styles.stepContainer, { opacity: fadeAnim }]}>
@@ -365,10 +435,7 @@ export default function StoryboardCreator() {
               setStep(2);
             }}
           >
-            <LinearGradient
-              colors={['#8b5cf6', '#6366f1']}
-              style={styles.generateButtonGradient}
-            >
+            <LinearGradient colors={['#8b5cf6', '#6366f1']} style={styles.generateButtonGradient}>
               <Ionicons name="create" size={22} color="#fff" />
               <Text style={styles.generateButtonText}>Start Manual Storyboard</Text>
             </LinearGradient>
@@ -464,17 +531,133 @@ export default function StoryboardCreator() {
         
         <TouchableOpacity
           style={styles.exportButton}
-          onPress={handleExportStoryboard}
+          onPress={handleProceedToExport}
         >
-          <LinearGradient
-            colors={['#10b981', '#059669']}
-            style={styles.exportButtonGradient}
-          >
-            <Ionicons name="download-outline" size={20} color="#fff" />
-            <Text style={styles.exportButtonText}>Export GROK Prompts</Text>
+          <LinearGradient colors={['#10b981', '#059669']} style={styles.exportButtonGradient}>
+            <Ionicons name="arrow-forward" size={20} color="#fff" />
+            <Text style={styles.exportButtonText}>Proceed to Export</Text>
           </LinearGradient>
         </TouchableOpacity>
       </View>
+    </Animated.View>
+  );
+
+  const renderExportStep = () => (
+    <Animated.View style={[styles.exportContainer, { opacity: fadeAnim }]}>
+      {/* Export Header */}
+      <View style={styles.exportHeader}>
+        <Ionicons name="cloud-upload" size={48} color="#8b5cf6" />
+        <Text style={styles.exportTitle}>Export Storyboard</Text>
+        <Text style={styles.exportSubtitle}>
+          {currentSession?.storyboardScenes.length || 0} scenes ready • {projectName || 'Untitled'}
+        </Text>
+      </View>
+
+      {/* Sticky Backup Options */}
+      <View style={styles.backupOptionsContainer}>
+        <Text style={styles.backupOptionsTitle}>Backup Options</Text>
+        
+        <RadioButton
+          selected={cloudBackup}
+          onPress={() => setCloudBackup(!cloudBackup)}
+          label="CLOUD Backup"
+          sublabel="Upload to Google Drive EXPORTS folder"
+          icon="cloud-outline"
+          disabled={!driveConfigured}
+        />
+        
+        <RadioButton
+          selected={dualBackup}
+          onPress={() => setDualBackup(!dualBackup)}
+          label="DUAL"
+          sublabel="Upload to Google Drive MULTI folder"
+          icon="copy-outline"
+          disabled={!driveConfigured}
+        />
+
+        {!driveConfigured && (
+          <View style={styles.driveNotice}>
+            <Ionicons name="information-circle" size={18} color="#f59e0b" />
+            <Text style={styles.driveNoticeText}>
+              Google Drive not configured. Local storage only.
+            </Text>
+          </View>
+        )}
+
+        <View style={styles.alwaysLocal}>
+          <Ionicons name="phone-portrait-outline" size={16} color="#10b981" />
+          <Text style={styles.alwaysLocalText}>✓ Local storage is always enabled</Text>
+        </View>
+      </View>
+
+      {/* Export Summary */}
+      <View style={styles.exportSummary}>
+        <Text style={styles.summaryTitle}>Export Summary:</Text>
+        <Text style={styles.summaryItem}>• Local Storage: Always</Text>
+        {cloudBackup && <Text style={styles.summaryItem}>• EXPORTS Folder: Enabled</Text>}
+        {dualBackup && <Text style={styles.summaryItem}>• MULTI Folder: Enabled</Text>}
+      </View>
+
+      {/* Export Result */}
+      {exportResult && (
+        <View style={styles.exportResult}>
+          <Text style={styles.resultTitle}>Export Results:</Text>
+          {exportResult.local_saved && (
+            <View style={styles.resultItem}>
+              <Ionicons name="checkmark-circle" size={18} color="#10b981" />
+              <Text style={styles.resultText}>Local: Saved</Text>
+            </View>
+          )}
+          {exportResult.cloud_backup?.success && (
+            <View style={styles.resultItem}>
+              <Ionicons name="checkmark-circle" size={18} color="#10b981" />
+              <Text style={styles.resultText}>EXPORTS: Uploaded</Text>
+            </View>
+          )}
+          {exportResult.dual_backup?.success && (
+            <View style={styles.resultItem}>
+              <Ionicons name="checkmark-circle" size={18} color="#10b981" />
+              <Text style={styles.resultText}>MULTI: Uploaded</Text>
+            </View>
+          )}
+          {exportResult.errors?.map((err: string, i: number) => (
+            <View key={i} style={styles.resultItem}>
+              <Ionicons name="warning" size={18} color="#f59e0b" />
+              <Text style={styles.resultTextWarning}>{err}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Export Button */}
+      <TouchableOpacity
+        style={[styles.mainExportButton, isExporting && styles.buttonDisabled]}
+        onPress={handleExport}
+        disabled={isExporting}
+      >
+        <LinearGradient
+          colors={isExporting ? ['#3f3f5a', '#3f3f5a'] : ['#8b5cf6', '#6366f1', '#4f46e5']}
+          style={styles.mainExportGradient}
+        >
+          {isExporting ? (
+            <>
+              <ActivityIndicator color="#fff" size="small" />
+              <Text style={styles.mainExportText}>Exporting...</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="download" size={24} color="#fff" />
+              <Text style={styles.mainExportText}>EXPORT</Text>
+            </>
+          )}
+        </LinearGradient>
+      </TouchableOpacity>
+
+      {/* Back to Editor */}
+      <TouchableOpacity style={styles.backToEditor} onPress={() => setStep(2)}>
+        <Ionicons name="arrow-back" size={18} color="#8b5cf6" />
+        <Text style={styles.backToEditorText}>Back to Storyboard</Text>
+      </TouchableOpacity>
     </Animated.View>
   );
 
@@ -496,14 +679,28 @@ export default function StoryboardCreator() {
             <Ionicons name="arrow-back" size={22} color="#fff" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>
-            {step === 1 ? 'Storyboard Creator' : 'Edit Storyboard'}
+            {step === 1 ? 'Storyboard Creator' : step === 2 ? 'Edit Storyboard' : 'Export'}
           </Text>
           {step === 2 && (
             <TouchableOpacity style={styles.backButton} onPress={() => setStep(1)}>
               <Ionicons name="settings-outline" size={20} color="#8b5cf6" />
             </TouchableOpacity>
           )}
-          {step === 1 && <View style={{ width: 40 }} />}
+          {(step === 1 || step === 3) && <View style={{ width: 40 }} />}
+        </View>
+
+        {/* Progress Steps */}
+        <View style={styles.progressSteps}>
+          {[1, 2, 3].map((s) => (
+            <View key={s} style={styles.progressStepContainer}>
+              <View style={[styles.progressStep, step >= s && styles.progressStepActive]}>
+                <Text style={[styles.progressStepText, step >= s && styles.progressStepTextActive]}>
+                  {s}
+                </Text>
+              </View>
+              {s < 3 && <View style={[styles.progressLine, step > s && styles.progressLineActive]} />}
+            </View>
+          ))}
         </View>
 
         {/* Auto-save indicator */}
@@ -523,7 +720,9 @@ export default function StoryboardCreator() {
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
-            {step === 1 ? renderSetupStep() : renderStoryboardEditor()}
+            {step === 1 && renderSetupStep()}
+            {step === 2 && renderStoryboardEditor()}
+            {step === 3 && renderExportStep()}
           </ScrollView>
         </KeyboardAvoidingView>
       </View>
@@ -640,6 +839,44 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   headerTitle: { fontSize: 17, fontWeight: '700', color: '#fff' },
+  progressSteps: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  progressStepContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  progressStep: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#2d2d44',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  progressStepActive: {
+    backgroundColor: '#8b5cf6',
+  },
+  progressStepText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6b7280',
+  },
+  progressStepTextActive: {
+    color: '#fff',
+  },
+  progressLine: {
+    width: 40,
+    height: 2,
+    backgroundColor: '#2d2d44',
+    marginHorizontal: 4,
+  },
+  progressLineActive: {
+    backgroundColor: '#8b5cf6',
+  },
   autoSaveIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -834,6 +1071,144 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   exportButtonText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+  
+  // Export Step Styles
+  exportContainer: { flex: 1, alignItems: 'center' },
+  exportHeader: { alignItems: 'center', marginBottom: 24 },
+  exportTitle: { fontSize: 24, fontWeight: '700', color: '#fff', marginTop: 12 },
+  exportSubtitle: { fontSize: 13, color: '#6b7280', marginTop: 4 },
+  
+  backupOptionsContainer: {
+    width: '100%',
+    backgroundColor: 'rgba(45, 45, 68, 0.4)',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(139, 92, 246, 0.3)',
+  },
+  backupOptionsTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 12,
+  },
+  radioButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(139, 92, 246, 0.1)',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(139, 92, 246, 0.2)',
+  },
+  radioButtonSelected: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+  },
+  radioButtonDisabled: {
+    opacity: 0.5,
+  },
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: '#6b7280',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  radioOuterSelected: {
+    borderColor: '#10b981',
+  },
+  radioInner: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#10b981',
+  },
+  radioContent: { flex: 1 },
+  radioHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  radioLabel: { fontSize: 15, fontWeight: '600', color: '#fff' },
+  radioLabelSelected: { color: '#10b981' },
+  radioSublabel: { fontSize: 11, color: '#6b7280', marginTop: 2, marginLeft: 26 },
+  
+  driveNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    padding: 10,
+    borderRadius: 8,
+    gap: 8,
+    marginTop: 8,
+  },
+  driveNoticeText: { flex: 1, fontSize: 11, color: '#f59e0b' },
+  
+  alwaysLocal: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(139, 92, 246, 0.2)',
+  },
+  alwaysLocalText: { fontSize: 12, color: '#10b981' },
+  
+  exportSummary: {
+    width: '100%',
+    backgroundColor: 'rgba(139, 92, 246, 0.1)',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+  },
+  summaryTitle: { fontSize: 13, fontWeight: '600', color: '#fff', marginBottom: 8 },
+  summaryItem: { fontSize: 12, color: '#a78bfa', marginBottom: 4 },
+  
+  exportResult: {
+    width: '100%',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  resultTitle: { fontSize: 13, fontWeight: '600', color: '#10b981', marginBottom: 8 },
+  resultItem: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  resultText: { fontSize: 12, color: '#34d399' },
+  resultTextWarning: { fontSize: 12, color: '#fbbf24' },
+  
+  mainExportButton: {
+    width: '100%',
+    borderRadius: 14,
+    overflow: 'hidden',
+    shadowColor: '#8b5cf6',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+    marginBottom: 16,
+  },
+  mainExportGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 18,
+    gap: 12,
+  },
+  mainExportText: { fontSize: 18, fontWeight: '800', color: '#fff', letterSpacing: 1 },
+  
+  backToEditor: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  backToEditorText: { fontSize: 14, color: '#8b5cf6' },
+  
+  // Modal Styles
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.85)',
