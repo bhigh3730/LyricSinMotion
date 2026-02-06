@@ -399,6 +399,130 @@ async def update_scene(project_id: str, scene_id: str, update: SceneUpdateReques
     
     return {"message": "Scene updated successfully"}
 
+# ==================== LYRICS BREAKDOWN ENDPOINT ====================
+
+class LyricsBreakdownRequest(BaseModel):
+    lyrics: str
+    theme: Optional[str] = "cinematic music video"
+    block_duration: int = 8  # seconds per block
+
+@api_router.post("/breakdown-lyrics")
+async def breakdown_lyrics(request: LyricsBreakdownRequest):
+    """
+    AI-powered lyrics breakdown into 8-second video blocks.
+    Generates GROK 4.1 optimized prompts for each block.
+    """
+    if not request.lyrics.strip():
+        raise HTTPException(status_code=400, detail="Lyrics are required")
+    
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        
+        api_key = os.environ.get('EMERGENT_LLM_KEY')
+        if not api_key:
+            raise HTTPException(status_code=500, detail="LLM API key not configured")
+        
+        # Calculate approximate number of blocks based on lyrics length
+        # Roughly estimate 3-4 seconds per line of lyrics
+        lines = [l.strip() for l in request.lyrics.strip().split('\n') if l.strip()]
+        estimated_duration = len(lines) * 3.5  # rough estimate
+        num_blocks = max(4, int(estimated_duration / request.block_duration))
+        
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"breakdown-{uuid.uuid4()}",
+            system_message=f"""You are an expert at breaking down song lyrics into cinematic video scene blocks.
+Each block should be exactly {request.block_duration} seconds of video content.
+Your output must be optimized for GROK 4.1 text-to-video generation.
+
+For each block, provide:
+1. The exact lyric segment for that timeframe
+2. Extremely detailed visual description (what GROK should generate)
+3. Precise camera movement
+4. Lighting setup
+5. Mood/atmosphere
+6. Character/subject actions
+7. Visual style reference
+
+CRITICAL RULES:
+- NO text overlays or lyrics on screen
+- NO audio waveforms or visualizers
+- ONLY cinematic, story-driven visuals
+- Each description should be 2-3 sentences minimum
+- Be extremely specific about visual details
+- Output ONLY valid JSON array"""
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        
+        prompt = f"""Break down these lyrics into {num_blocks} cinematic video blocks of {request.block_duration} seconds each.
+
+THEME/VISUAL STYLE: {request.theme}
+
+LYRICS:
+{request.lyrics}
+
+Create exactly {num_blocks} scene blocks. Each block must be optimized for GROK 4.1 text-to-video AI.
+
+Output ONLY a valid JSON array with this exact format:
+[
+  {{
+    "block_number": 1,
+    "start_time": 0,
+    "end_time": {request.block_duration},
+    "lyric_segment": "The exact lyrics for this block",
+    "description": "Extremely detailed cinematic scene description. Include environment, subjects, actions, colors, textures. Be specific enough for AI video generation.",
+    "camera_movement": "Specific camera technique (slow dolly in, aerial tracking shot, handheld follow, etc.)",
+    "lighting": "Detailed lighting setup (neon glow from left, harsh overhead spotlight, golden hour backlight, etc.)",
+    "mood": "Emotional atmosphere (tense anticipation, ethereal calm, explosive energy, etc.)",
+    "character_actions": "What subjects/characters are doing in the scene",
+    "visual_style": "Reference style (photorealistic, cinematic CGI, anime-inspired, etc.)"
+  }}
+]"""
+        
+        user_message = UserMessage(text=prompt)
+        response = await chat.send_message(user_message)
+        
+        # Parse the response
+        response_text = response.strip()
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0]
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0]
+        
+        scenes_data = json.loads(response_text)
+        
+        # Ensure proper formatting
+        formatted_scenes = []
+        for i, scene in enumerate(scenes_data):
+            formatted_scene = {
+                "block_number": scene.get("block_number", i + 1),
+                "start_time": scene.get("start_time", i * request.block_duration),
+                "end_time": scene.get("end_time", (i + 1) * request.block_duration),
+                "lyric_segment": scene.get("lyric_segment", ""),
+                "description": scene.get("description", ""),
+                "camera_movement": scene.get("camera_movement", ""),
+                "lighting": scene.get("lighting", ""),
+                "mood": scene.get("mood", ""),
+                "character_actions": scene.get("character_actions", ""),
+                "visual_style": scene.get("visual_style", "cinematic photorealistic"),
+            }
+            formatted_scenes.append(formatted_scene)
+        
+        return {
+            "message": "Lyrics breakdown complete",
+            "block_duration": request.block_duration,
+            "total_blocks": len(formatted_scenes),
+            "estimated_duration": len(formatted_scenes) * request.block_duration,
+            "scenes": formatted_scenes
+        }
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse AI response: {e}")
+        raise HTTPException(status_code=500, detail="Failed to parse AI response")
+    except Exception as e:
+        logger.error(f"Error in lyrics breakdown: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Generate Video (Mock)
 @api_router.post("/projects/{project_id}/generate-video")
 async def generate_video(project_id: str):
