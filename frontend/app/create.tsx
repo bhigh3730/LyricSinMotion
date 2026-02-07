@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -23,70 +23,46 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library';
-import { useCacheStore, StoryboardScene } from '../store/cacheStore';
+import * as DocumentPicker from 'expo-document-picker';
+import { useCacheStore } from '../store/cacheStore';
 import { useProjectStore } from '../store/projectStore';
 import axios from 'axios';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 
-export default function StoryboardCreator() {
+export default function CreateScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  
-  const {
-    currentSession,
-    updateSession,
-    startAutoSave,
-    stopAutoSave,
-    saveToCache,
-    addScene,
-    updateScene,
-    removeScene,
-    exportStoryboardAsText,
-    createNewSession,
-  } = useCacheStore();
+  const { createProject, saveLyrics } = useProjectStore();
+  const { startAutoSave, stopAutoSave, saveToCache, exportStoryboardAsText } = useCacheStore();
 
-  const { createProject, saveLyrics, saveTheme } = useProjectStore();
-
-  const [mode, setMode] = useState<'manual' | 'auto-breakdown'>('manual');
+  // State
+  const [step, setStep] = useState(1); // 1: Upload Audio, 2: Review/Generate, 3: Edit Scenes, 4: Export
   const [projectName, setProjectName] = useState('');
-  const [lyrics, setLyrics] = useState('');
-  const [theme, setTheme] = useState('');
-  const [blockDuration, setBlockDuration] = useState(8);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [audioFile, setAudioFile] = useState<any>(null);
+  const [audioAnalysis, setAudioAnalysis] = useState<any>(null);
+  const [lyrics, setLyrics] = useState(''); // Optional - helps AI understand unclear words
+  const [renderStyle, setRenderStyle] = useState('cinematic photorealistic');
+  const [scenes, setScenes] = useState<any[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [editingScene, setEditingScene] = useState<StoryboardScene | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [editingScene, setEditingScene] = useState<any>(null);
   const [showSceneModal, setShowSceneModal] = useState(false);
-  const [step, setStep] = useState(1); // 1: Setup, 2: Storyboard Editor, 3: Export
-
+  
   // Export options
   const [cloudBackup, setCloudBackup] = useState(false);
   const [dualBackup, setDualBackup] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
-  const [exportResult, setExportResult] = useState<any>(null);
   const [driveConfigured, setDriveConfigured] = useState(false);
 
-  // Animations
+  // Animation
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    // Start auto-save
     startAutoSave();
-    
-    // Check Drive configuration
     checkDriveStatus();
     
-    // Initialize from cache if exists
-    if (currentSession) {
-      setProjectName(currentSession.projectName || '');
-      setLyrics(currentSession.lyrics || '');
-      setTheme(currentSession.theme || '');
-      setMode(currentSession.mode || 'manual');
-      setBlockDuration(currentSession.breakdownDuration || 8);
-      if (currentSession.storyboardScenes.length > 0) {
-        setStep(2);
-      }
-    }
-
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 400,
@@ -99,18 +75,6 @@ export default function StoryboardCreator() {
     };
   }, []);
 
-  // Update cache whenever inputs change
-  useEffect(() => {
-    updateSession({
-      projectName,
-      lyrics,
-      theme,
-      mode,
-      breakdownDuration: blockDuration,
-      currentStep: step,
-    });
-  }, [projectName, lyrics, theme, mode, blockDuration, step]);
-
   const checkDriveStatus = async () => {
     try {
       const response = await axios.get(`${API_URL}/api/drive/status`);
@@ -120,361 +84,325 @@ export default function StoryboardCreator() {
     }
   };
 
-  const handleAutoBreakdown = async () => {
-    if (!lyrics.trim()) {
-      Alert.alert('Error', 'Please enter lyrics first');
+  // Step 1: Pick Audio File
+  const handlePickAudio = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-m4a', 'audio/*'],
+        copyToCacheDirectory: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        setAudioFile(result.assets[0]);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to pick audio file');
+    }
+  };
+
+  // Step 1: Upload & Analyze Audio
+  const handleUploadAudio = async () => {
+    if (!projectName.trim()) {
+      Alert.alert('Error', 'Please enter a project name');
+      return;
+    }
+    if (!audioFile) {
+      Alert.alert('Error', 'Please select an audio file');
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      // Create project
+      const projectResponse = await axios.post(`${API_URL}/api/projects`, {
+        name: projectName.trim(),
+      });
+      const newProjectId = projectResponse.data.id;
+      setProjectId(newProjectId);
+
+      // Upload audio for analysis
+      const formData = new FormData();
+      formData.append('audio', {
+        uri: audioFile.uri,
+        name: audioFile.name || 'audio.mp3',
+        type: audioFile.mimeType || 'audio/mpeg',
+      } as any);
+
+      const analysisResponse = await axios.post(
+        `${API_URL}/api/projects/${newProjectId}/audio`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      );
+
+      setAudioAnalysis(analysisResponse.data.analysis);
+      setStep(2);
+
+    } catch (error: any) {
+      console.error('Upload error:', error);
+      Alert.alert('Error', error?.response?.data?.detail || 'Failed to analyze audio');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  // Step 2: Auto-Generate All Scenes
+  const handleAutoGenerate = async () => {
+    if (!projectId) {
+      Alert.alert('Error', 'Project not found');
       return;
     }
 
     setIsGenerating(true);
     try {
-      const response = await axios.post(`${API_URL}/api/breakdown-lyrics`, {
-        lyrics: lyrics.trim(),
-        theme: theme.trim(),
-        block_duration: blockDuration,
+      const response = await axios.post(`${API_URL}/api/projects/${projectId}/auto-generate`, {
+        project_id: projectId,
+        lyrics: lyrics.trim() || null, // Optional - helps AI understand unclear words
+        render_style: renderStyle,
       });
 
-      const { scenes } = response.data;
-      
-      createNewSession('auto-breakdown');
-      updateSession({
-        projectName,
-        lyrics,
-        theme,
-        mode: 'auto-breakdown',
-        breakdownDuration: blockDuration,
-      });
+      setScenes(response.data.scenes);
+      setStep(3);
 
-      scenes.forEach((scene: any) => {
-        addScene({
-          lyricSegment: scene.lyric_segment,
-          sceneDescription: scene.description,
-          cameraMovement: scene.camera_movement,
-          lighting: scene.lighting,
-          mood: scene.mood,
-          characterActions: scene.character_actions,
-          visualStyle: scene.visual_style,
-          startTime: scene.start_time,
-          endTime: scene.end_time,
-        });
-      });
+      Alert.alert(
+        'Success!',
+        `AI generated ${response.data.total_scenes} scenes automatically!\n\nYou can now review and edit any scene.`
+      );
 
-      setStep(2);
     } catch (error: any) {
-      console.error('Breakdown error:', error);
-      Alert.alert('Error', error?.response?.data?.detail || 'Failed to generate breakdown');
+      console.error('Generation error:', error);
+      Alert.alert('Error', error?.response?.data?.detail || 'Failed to generate scenes');
     } finally {
       setIsGenerating(false);
     }
   };
 
-  const handleAddManualScene = () => {
-    const scenes = currentSession?.storyboardScenes || [];
-    const lastScene = scenes[scenes.length - 1];
-    const startTime = lastScene ? lastScene.endTime : 0;
-    
-    setEditingScene({
-      id: '',
-      blockNumber: scenes.length + 1,
-      startTime,
-      endTime: startTime + blockDuration,
-      lyricSegment: '',
-      sceneDescription: '',
-      cameraMovement: '',
-      lighting: '',
-      mood: '',
-      characterActions: '',
-      visualStyle: '',
-      grokPrompt: '',
-    });
-    setShowSceneModal(true);
-  };
+  // Step 3: Edit a scene
+  const handleSaveSceneEdit = async () => {
+    if (!editingScene || !projectId) return;
 
-  const handleSaveScene = () => {
-    if (!editingScene) return;
+    try {
+      await axios.put(`${API_URL}/api/projects/${projectId}/scenes/${editingScene.id}`, {
+        project_id: projectId,
+        scene_id: editingScene.id,
+        description: editingScene.description,
+        camera_movement: editingScene.camera_movement,
+        lighting: editingScene.lighting,
+        mood: editingScene.mood,
+        render_style: editingScene.render_style,
+      });
 
-    if (editingScene.id) {
-      updateScene(editingScene.id, editingScene);
-    } else {
-      addScene(editingScene);
+      // Update local state
+      setScenes(prev => prev.map(s => s.id === editingScene.id ? editingScene : s));
+      setShowSceneModal(false);
+      setEditingScene(null);
+
+    } catch (error) {
+      Alert.alert('Error', 'Failed to save scene');
     }
-    setShowSceneModal(false);
-    setEditingScene(null);
   };
 
-  const handleProceedToExport = () => {
-    if (!currentSession || currentSession.storyboardScenes.length === 0) {
-      Alert.alert('Error', 'No storyboard scenes to export');
+  // Step 4: Export
+  const handleExport = async () => {
+    if (scenes.length === 0) {
+      Alert.alert('Error', 'No scenes to export');
       return;
     }
-    setStep(3);
-  };
 
-  // Request storage permissions for Android
-  const requestStoragePermission = async () => {
-    if (Platform.OS === 'android') {
-      try {
-        const { status } = await MediaLibrary.requestPermissionsAsync();
-        return status === 'granted';
-      } catch (err) {
-        console.error('Permission error:', err);
-        return false;
-      }
-    }
-    return true;
-  };
-
-  // Save file to Downloads folder (Android native)
-  const saveToDownloads = async (filename: string, content: string): Promise<string | null> => {
+    setIsExporting(true);
     try {
-      if (Platform.OS === 'android') {
-        // Request permissions
-        const hasPermission = await requestStoragePermission();
-        if (!hasPermission) {
-          Alert.alert('Permission Required', 'Storage permission is needed to save files');
-          return null;
+      // Build export text with GROK-optimized prompts
+      const exportLines = [
+        '='.repeat(60),
+        'LYRICSINMOTION STORYBOARD EXPORT',
+        `Project: ${projectName}`,
+        `Exported: ${new Date().toLocaleString()}`,
+        `Total Scenes: ${scenes.length}`,
+        `Render Style: ${renderStyle}`,
+        '='.repeat(60),
+        '',
+        'Each scene block is optimized for GROK 4.1 text-to-video.',
+        'Generate 8-10 second clips per block.',
+        '',
+        '='.repeat(60),
+      ];
+
+      scenes.forEach((scene, i) => {
+        exportLines.push('');
+        exportLines.push('-'.repeat(60));
+        exportLines.push(`[SCENE ${scene.segment_number || i + 1}] [${scene.start_time}s - ${scene.end_time}s]`);
+        exportLines.push(`SECTION: ${scene.section_type || 'verse'} | ENERGY: ${scene.energy || 'medium'}`);
+        exportLines.push('');
+        exportLines.push(`VISUAL: ${scene.description}`);
+        exportLines.push('');
+        exportLines.push(`CAMERA: ${scene.camera_movement}`);
+        exportLines.push(`LIGHTING: ${scene.lighting}`);
+        exportLines.push(`MOOD: ${scene.mood}`);
+        exportLines.push(`STYLE: ${scene.render_style || renderStyle}`);
+        exportLines.push('');
+        if (scene.grok_prompt) {
+          exportLines.push('GROK PROMPT:');
+          exportLines.push(scene.grok_prompt);
         }
+        exportLines.push('-'.repeat(60));
+      });
 
-        // First save to cache directory
-        const cacheUri = `${FileSystem.cacheDirectory}${filename}`;
-        await FileSystem.writeAsStringAsync(cacheUri, content, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
+      exportLines.push('');
+      exportLines.push('='.repeat(60));
+      exportLines.push(`TOTAL RUNTIME: ~${scenes.length * 8} seconds`);
+      exportLines.push('='.repeat(60));
 
-        // Use SAF (Storage Access Framework) to save to user-selected location
+      const exportText = exportLines.join('\n');
+      const filename = `${projectName.replace(/[^a-zA-Z0-9]/g, '_')}_storyboard_${Date.now()}.txt`;
+
+      // Save using native file system
+      if (Platform.OS === 'android') {
         const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-        
         if (permissions.granted) {
-          // User selected a directory, create file there
           const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
             permissions.directoryUri,
             filename,
             'text/plain'
           );
-          
-          await FileSystem.writeAsStringAsync(fileUri, content, {
-            encoding: FileSystem.EncodingType.UTF8,
-          });
-          
-          return fileUri;
+          await FileSystem.writeAsStringAsync(fileUri, exportText);
         } else {
-          // Fallback: Save to document directory and share
-          const docUri = `${FileSystem.documentDirectory}${filename}`;
-          await FileSystem.writeAsStringAsync(docUri, content, {
-            encoding: FileSystem.EncodingType.UTF8,
-          });
-          return docUri;
+          // Fallback to document directory
+          const filePath = `${FileSystem.documentDirectory}${filename}`;
+          await FileSystem.writeAsStringAsync(filePath, exportText);
+          if (await Sharing.isAvailableAsync()) {
+            await Sharing.shareAsync(filePath, { mimeType: 'text/plain' });
+          }
         }
       } else {
-        // iOS - save to document directory
-        const docUri = `${FileSystem.documentDirectory}${filename}`;
-        await FileSystem.writeAsStringAsync(docUri, content, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-        return docUri;
-      }
-    } catch (error) {
-      console.error('Save to downloads error:', error);
-      return null;
-    }
-  };
-
-  const handleExport = async () => {
-    if (!currentSession || currentSession.storyboardScenes.length === 0) {
-      Alert.alert('Error', 'No storyboard scenes to export');
-      return;
-    }
-
-    setIsExporting(true);
-    setExportResult(null);
-
-    try {
-      const exportText = exportStoryboardAsText(projectName || 'Untitled');
-      const sanitizedName = (projectName || 'Untitled').replace(/[^a-zA-Z0-9]/g, '_');
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const filename = `${sanitizedName}_storyboard_${timestamp}.txt`;
-
-      // Save to local storage using native Android method
-      const savedPath = await saveToDownloads(filename, exportText);
-      
-      let localSaveSuccess = false;
-      let localPath = '';
-
-      if (savedPath) {
-        localSaveSuccess = true;
-        localPath = savedPath;
-      } else {
-        // Fallback: save to app's document directory
-        const fallbackPath = `${FileSystem.documentDirectory}${filename}`;
-        await FileSystem.writeAsStringAsync(fallbackPath, exportText, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-        localSaveSuccess = true;
-        localPath = fallbackPath;
+        const filePath = `${FileSystem.documentDirectory}${filename}`;
+        await FileSystem.writeAsStringAsync(filePath, exportText);
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(filePath, { mimeType: 'text/plain' });
+        }
       }
 
-      // Upload to backend/Google Drive if selected
-      let uploadResponse: any = { local_saved: localSaveSuccess, errors: [] };
-      
-      try {
-        uploadResponse = await axios.post(`${API_URL}/api/drive/upload`, {
+      // Also upload to cloud if selected
+      if (cloudBackup || dualBackup) {
+        await axios.post(`${API_URL}/api/drive/upload`, {
           filename,
           content: exportText,
           cloud_backup: cloudBackup,
           dual_backup: dualBackup,
         });
-        uploadResponse.local_saved = localSaveSuccess;
-      } catch (uploadError) {
-        console.error('Cloud upload error:', uploadError);
-        uploadResponse.errors.push('Cloud backup failed');
       }
 
-      setExportResult({
-        ...uploadResponse,
-        localPath,
-        filename,
-        localSaveSuccess,
-      });
-
-      // Offer to share the file
-      if (localPath && await Sharing.isAvailableAsync()) {
-        Alert.alert(
-          'Export Complete',
-          `File saved: ${filename}\n\nWould you like to share or open the file?`,
-          [
-            { text: 'Done', style: 'cancel' },
-            {
-              text: 'Share/Open',
-              onPress: async () => {
-                try {
-                  await Sharing.shareAsync(localPath, {
-                    mimeType: 'text/plain',
-                    dialogTitle: 'Storyboard Export',
-                    UTI: 'public.plain-text',
-                  });
-                } catch (shareError) {
-                  console.error('Share error:', shareError);
-                }
-              },
-            },
-          ]
-        );
-      } else {
-        // Show success message
-        let message = localSaveSuccess 
-          ? `✓ Saved to: ${filename}` 
-          : 'Local save failed';
-        
-        if (uploadResponse.cloud_backup?.success) {
-          message += '\n✓ Uploaded to EXPORTS folder';
-        }
-        if (uploadResponse.dual_backup?.success) {
-          message += '\n✓ Uploaded to MULTI folder';
-        }
-        if (uploadResponse.errors?.length > 0) {
-          message += '\n\nWarnings: ' + uploadResponse.errors.join(', ');
-        }
-
-        Alert.alert('Export Complete', message);
-      }
+      Alert.alert('Export Complete', `Saved: ${filename}`);
 
     } catch (error: any) {
       console.error('Export error:', error);
-      Alert.alert('Export Error', error?.message || 'Failed to export storyboard');
+      Alert.alert('Error', error?.message || 'Export failed');
     } finally {
       setIsExporting(false);
     }
   };
 
-  const handleSaveProject = async () => {
-    if (!projectName.trim()) {
-      Alert.alert('Error', 'Please enter a project name');
-      return;
-    }
-
-    try {
-      const project = await createProject(projectName.trim());
-      if (lyrics.trim()) {
-        await saveLyrics(project.id, lyrics.trim());
-      }
-      if (theme.trim()) {
-        await saveTheme(project.id, theme.trim());
-      }
-      
-      await saveToCache();
-      Alert.alert('Saved', 'Project saved successfully');
-    } catch (error) {
-      Alert.alert('Error', 'Failed to save project');
-    }
-  };
-
-  // Radio Button Component
-  const RadioButton = ({ selected, onPress, label, sublabel, icon, disabled }: any) => (
-    <TouchableOpacity
-      style={[styles.radioButton, selected && styles.radioButtonSelected, disabled && styles.radioButtonDisabled]}
-      onPress={onPress}
-      disabled={disabled}
-      activeOpacity={0.7}
-    >
-      <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
-        {selected && <View style={styles.radioInner} />}
-      </View>
-      <View style={styles.radioContent}>
-        <View style={styles.radioHeader}>
-          <Ionicons name={icon} size={18} color={selected ? '#10b981' : '#8b5cf6'} />
-          <Text style={[styles.radioLabel, selected && styles.radioLabelSelected]}>{label}</Text>
-        </View>
-        <Text style={styles.radioSublabel}>{sublabel}</Text>
-      </View>
-      {selected && <Ionicons name="checkmark-circle" size={22} color="#10b981" />}
-    </TouchableOpacity>
-  );
-
-  const renderSetupStep = () => (
+  // Render Step 1: Upload Audio
+  const renderStep1 = () => (
     <Animated.View style={[styles.stepContainer, { opacity: fadeAnim }]}>
-      {/* Mode Selection */}
-      <View style={styles.modeSelector}>
-        <TouchableOpacity
-          style={[styles.modeButton, mode === 'manual' && styles.modeButtonActive]}
-          onPress={() => setMode('manual')}
-        >
-          <Ionicons name="create-outline" size={20} color={mode === 'manual' ? '#fff' : '#8b5cf6'} />
-          <Text style={[styles.modeButtonText, mode === 'manual' && styles.modeButtonTextActive]}>
-            Manual
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.modeButton, mode === 'auto-breakdown' && styles.modeButtonActive]}
-          onPress={() => setMode('auto-breakdown')}
-        >
-          <Ionicons name="sparkles" size={20} color={mode === 'auto-breakdown' ? '#fff' : '#8b5cf6'} />
-          <Text style={[styles.modeButtonText, mode === 'auto-breakdown' && styles.modeButtonTextActive]}>
-            AI Breakdown
-          </Text>
-        </TouchableOpacity>
+      <View style={styles.stepHeader}>
+        <Ionicons name="musical-notes" size={48} color="#8b5cf6" />
+        <Text style={styles.stepTitle}>Upload Your Track</Text>
+        <Text style={styles.stepDescription}>
+          AI will analyze the rhythm, tempo, and energy to auto-generate scene descriptions
+        </Text>
       </View>
 
-      <Text style={styles.modeDescription}>
-        {mode === 'manual' 
-          ? 'Create storyboard scenes manually, one by one'
-          : 'AI automatically breaks lyrics into 8-second video blocks with GROK-optimized prompts'}
-      </Text>
-
-      {/* Project Name */}
       <Text style={styles.inputLabel}>Project Name</Text>
       <TextInput
         style={styles.input}
-        placeholder="Enter project name..."
+        placeholder="My Music Video..."
         placeholderTextColor="#6b7280"
         value={projectName}
         onChangeText={setProjectName}
       />
 
-      {/* Lyrics Input */}
-      <Text style={styles.inputLabel}>Song Lyrics</Text>
+      <TouchableOpacity style={styles.uploadBox} onPress={handlePickAudio}>
+        <LinearGradient
+          colors={['rgba(139, 92, 246, 0.2)', 'rgba(99, 102, 241, 0.1)']}
+          style={styles.uploadBoxGradient}
+        >
+          {audioFile ? (
+            <>
+              <Ionicons name="checkmark-circle" size={48} color="#10b981" />
+              <Text style={styles.uploadedFileName}>{audioFile.name}</Text>
+              <Text style={styles.uploadSubtext}>Tap to change</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="cloud-upload-outline" size={48} color="#8b5cf6" />
+              <Text style={styles.uploadText}>Tap to select MP3/WAV</Text>
+              <Text style={styles.uploadSubtext}>AI will analyze rhythm & energy</Text>
+            </>
+          )}
+        </LinearGradient>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.primaryButton, (!audioFile || !projectName.trim() || isUploading) && styles.buttonDisabled]}
+        onPress={handleUploadAudio}
+        disabled={!audioFile || !projectName.trim() || isUploading}
+      >
+        <LinearGradient
+          colors={audioFile && projectName.trim() ? ['#8b5cf6', '#6366f1'] : ['#3f3f5a', '#3f3f5a']}
+          style={styles.primaryButtonGradient}
+        >
+          {isUploading ? (
+            <>
+              <ActivityIndicator color="#fff" size="small" />
+              <Text style={styles.primaryButtonText}>Analyzing Audio...</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="analytics" size={22} color="#fff" />
+              <Text style={styles.primaryButtonText}>Analyze & Continue</Text>
+            </>
+          )}
+        </LinearGradient>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+
+  // Render Step 2: Review Analysis & Generate
+  const renderStep2 = () => (
+    <Animated.View style={[styles.stepContainer, { opacity: fadeAnim }]}>
+      <View style={styles.stepHeader}>
+        <Ionicons name="sparkles" size={48} color="#8b5cf6" />
+        <Text style={styles.stepTitle}>Audio Analyzed!</Text>
+        <Text style={styles.stepDescription}>
+          AI detected the rhythm. Now generate all scene descriptions automatically.
+        </Text>
+      </View>
+
+      {/* Audio Analysis Summary */}
+      {audioAnalysis && (
+        <View style={styles.analysisSummary}>
+          <View style={styles.analysisRow}>
+            <View style={styles.analysisItem}>
+              <Text style={styles.analysisValue}>{Math.round(audioAnalysis.duration)}s</Text>
+              <Text style={styles.analysisLabel}>Duration</Text>
+            </View>
+            <View style={styles.analysisItem}>
+              <Text style={styles.analysisValue}>{Math.round(audioAnalysis.tempo)} BPM</Text>
+              <Text style={styles.analysisLabel}>Tempo</Text>
+            </View>
+            <View style={styles.analysisItem}>
+              <Text style={styles.analysisValue}>{audioAnalysis.num_segments}</Text>
+              <Text style={styles.analysisLabel}>Scenes</Text>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* Optional Lyrics */}
+      <Text style={styles.inputLabel}>Lyrics (Optional)</Text>
+      <Text style={styles.inputHint}>Helps AI understand slang or unclear words</Text>
       <TextInput
         style={styles.lyricsInput}
-        placeholder="Paste complete song lyrics here...\n\n[Verse 1]\nYour lyrics...\n\n[Chorus]\n..."
+        placeholder="Paste lyrics here if you want AI to better understand the words..."
         placeholderTextColor="#4b5563"
         value={lyrics}
         onChangeText={setLyrics}
@@ -482,104 +410,58 @@ export default function StoryboardCreator() {
         textAlignVertical="top"
       />
 
-      {/* Theme/Style */}
-      <Text style={styles.inputLabel}>Visual Theme (Optional)</Text>
+      {/* Render Style */}
+      <Text style={styles.inputLabel}>Render Style</Text>
       <TextInput
-        style={styles.themeInput}
-        placeholder="e.g., Cyberpunk cityscape, neon lights, futuristic dystopia..."
-        placeholderTextColor="#4b5563"
-        value={theme}
-        onChangeText={setTheme}
-        multiline
-        textAlignVertical="top"
+        style={styles.input}
+        placeholder="cinematic photorealistic"
+        placeholderTextColor="#6b7280"
+        value={renderStyle}
+        onChangeText={setRenderStyle}
       />
 
-      {/* Block Duration */}
-      {mode === 'auto-breakdown' && (
-        <View style={styles.durationSelector}>
-          <Text style={styles.inputLabel}>Block Duration: {blockDuration}s</Text>
-          <View style={styles.durationButtons}>
-            {[6, 8, 10].map((dur) => (
-              <TouchableOpacity
-                key={dur}
-                style={[styles.durationButton, blockDuration === dur && styles.durationButtonActive]}
-                onPress={() => setBlockDuration(dur)}
-              >
-                <Text style={[styles.durationButtonText, blockDuration === dur && styles.durationButtonTextActive]}>
-                  {dur}s
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      )}
-
-      {/* Action Buttons */}
-      <View style={styles.actionButtons}>
-        {mode === 'auto-breakdown' ? (
-          <TouchableOpacity
-            style={[styles.generateButton, (!lyrics.trim() || isGenerating) && styles.buttonDisabled]}
-            onPress={handleAutoBreakdown}
-            disabled={!lyrics.trim() || isGenerating}
-          >
-            <LinearGradient
-              colors={lyrics.trim() && !isGenerating ? ['#8b5cf6', '#6366f1'] : ['#3f3f5a', '#3f3f5a']}
-              style={styles.generateButtonGradient}
-            >
-              {isGenerating ? (
-                <>
-                  <ActivityIndicator color="#fff" size="small" />
-                  <Text style={styles.generateButtonText}>Generating Breakdown...</Text>
-                </>
-              ) : (
-                <>
-                  <Ionicons name="sparkles" size={22} color="#fff" />
-                  <Text style={styles.generateButtonText}>Generate AI Breakdown</Text>
-                </>
-              )}
-            </LinearGradient>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={styles.generateButton}
-            onPress={() => {
-              if (!projectName.trim()) {
-                Alert.alert('Error', 'Please enter a project name');
-                return;
-              }
-              createNewSession('manual');
-              updateSession({ projectName, lyrics, theme, mode: 'manual' });
-              setStep(2);
-            }}
-          >
-            <LinearGradient colors={['#8b5cf6', '#6366f1']} style={styles.generateButtonGradient}>
-              <Ionicons name="create" size={22} color="#fff" />
-              <Text style={styles.generateButtonText}>Start Manual Storyboard</Text>
-            </LinearGradient>
-          </TouchableOpacity>
-        )}
-      </View>
+      <TouchableOpacity
+        style={[styles.primaryButton, isGenerating && styles.buttonDisabled]}
+        onPress={handleAutoGenerate}
+        disabled={isGenerating}
+      >
+        <LinearGradient
+          colors={isGenerating ? ['#3f3f5a', '#3f3f5a'] : ['#8b5cf6', '#6366f1', '#4f46e5']}
+          style={styles.primaryButtonGradient}
+        >
+          {isGenerating ? (
+            <>
+              <ActivityIndicator color="#fff" size="small" />
+              <Text style={styles.primaryButtonText}>AI Generating {audioAnalysis?.num_segments || '...'} Scenes...</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="flash" size={22} color="#fff" />
+              <Text style={styles.primaryButtonText}>Auto-Generate All Scenes</Text>
+            </>
+          )}
+        </LinearGradient>
+      </TouchableOpacity>
     </Animated.View>
   );
 
-  const renderStoryboardEditor = () => (
-    <Animated.View style={[styles.editorContainer, { opacity: fadeAnim }]}>
-      {/* Editor Header */}
-      <View style={styles.editorHeader}>
-        <Text style={styles.editorTitle}>{projectName || 'Untitled'}</Text>
-        <Text style={styles.editorSubtitle}>
-          {currentSession?.storyboardScenes.length || 0} scenes • {mode === 'auto-breakdown' ? 'AI Breakdown' : 'Manual'}
+  // Render Step 3: Review & Edit Scenes
+  const renderStep3 = () => (
+    <Animated.View style={[styles.stepContainer, { opacity: fadeAnim }]}>
+      <View style={styles.stepHeader}>
+        <Text style={styles.stepTitle}>{scenes.length} Scenes Generated</Text>
+        <Text style={styles.stepDescription}>
+          Review and edit any scene. Tap a scene to modify.
         </Text>
       </View>
 
-      {/* Scenes List */}
       <ScrollView style={styles.scenesList} showsVerticalScrollIndicator={false}>
-        {currentSession?.storyboardScenes.map((scene, index) => (
+        {scenes.map((scene, index) => (
           <TouchableOpacity
-            key={scene.id}
+            key={scene.id || index}
             style={styles.sceneCard}
             onPress={() => {
-              setEditingScene(scene);
+              setEditingScene({ ...scene });
               setShowSceneModal(true);
             }}
           >
@@ -589,191 +471,109 @@ export default function StoryboardCreator() {
             >
               <View style={styles.sceneCardHeader}>
                 <View style={styles.sceneNumber}>
-                  <Text style={styles.sceneNumberText}>{scene.blockNumber}</Text>
+                  <Text style={styles.sceneNumberText}>{scene.segment_number || index + 1}</Text>
                 </View>
-                <Text style={styles.sceneTime}>
-                  {scene.startTime}s - {scene.endTime}s
-                </Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    Alert.alert('Delete Scene', 'Remove this scene?', [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Delete', style: 'destructive', onPress: () => removeScene(scene.id) },
-                    ]);
-                  }}
-                >
-                  <Ionicons name="trash-outline" size={18} color="#ef4444" />
-                </TouchableOpacity>
+                <Text style={styles.sceneTime}>{scene.start_time}s - {scene.end_time}s</Text>
+                <View style={[styles.energyBadge, { backgroundColor: scene.energy > 0.6 ? '#ef444420' : scene.energy > 0.3 ? '#f59e0b20' : '#10b98120' }]}>
+                  <Text style={[styles.energyText, { color: scene.energy > 0.6 ? '#ef4444' : scene.energy > 0.3 ? '#f59e0b' : '#10b981' }]}>
+                    {scene.section_type || 'verse'}
+                  </Text>
+                </View>
               </View>
-              
-              {scene.lyricSegment && (
-                <Text style={styles.sceneLyric} numberOfLines={2}>
-                  "{scene.lyricSegment}"
-                </Text>
-              )}
-              
-              <Text style={styles.sceneDesc} numberOfLines={2}>
-                {scene.sceneDescription || 'Tap to edit scene details...'}
+              <Text style={styles.sceneDescription} numberOfLines={3}>
+                {scene.description || 'Tap to add description...'}
               </Text>
-              
-              <View style={styles.sceneTags}>
-                {scene.mood && (
-                  <View style={styles.sceneTag}>
-                    <Text style={styles.sceneTagText}>{scene.mood}</Text>
-                  </View>
-                )}
-                {scene.cameraMovement && (
-                  <View style={styles.sceneTag}>
-                    <Text style={styles.sceneTagText}>{scene.cameraMovement}</Text>
-                  </View>
-                )}
+              <View style={styles.sceneFooter}>
+                <Text style={styles.sceneStyle}>{scene.render_style || renderStyle}</Text>
+                <Ionicons name="pencil" size={16} color="#8b5cf6" />
               </View>
             </LinearGradient>
           </TouchableOpacity>
         ))}
-
-        {/* Add Scene Button */}
-        <TouchableOpacity style={styles.addSceneButton} onPress={handleAddManualScene}>
-          <Ionicons name="add-circle" size={24} color="#8b5cf6" />
-          <Text style={styles.addSceneText}>Add Scene</Text>
-        </TouchableOpacity>
       </ScrollView>
 
-      {/* Bottom Actions */}
-      <View style={styles.bottomActions}>
-        <TouchableOpacity style={styles.saveButton} onPress={handleSaveProject}>
-          <Ionicons name="save-outline" size={20} color="#8b5cf6" />
-          <Text style={styles.saveButtonText}>Save</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={styles.exportButton}
-          onPress={handleProceedToExport}
-        >
-          <LinearGradient colors={['#10b981', '#059669']} style={styles.exportButtonGradient}>
-            <Ionicons name="arrow-forward" size={20} color="#fff" />
-            <Text style={styles.exportButtonText}>Proceed to Export</Text>
-          </LinearGradient>
-        </TouchableOpacity>
-      </View>
+      <TouchableOpacity style={styles.primaryButton} onPress={() => setStep(4)}>
+        <LinearGradient colors={['#10b981', '#059669']} style={styles.primaryButtonGradient}>
+          <Ionicons name="arrow-forward" size={22} color="#fff" />
+          <Text style={styles.primaryButtonText}>Proceed to Export</Text>
+        </LinearGradient>
+      </TouchableOpacity>
     </Animated.View>
   );
 
-  const renderExportStep = () => (
-    <Animated.View style={[styles.exportContainer, { opacity: fadeAnim }]}>
-      {/* Export Header */}
-      <View style={styles.exportHeader}>
-        <Ionicons name="cloud-upload" size={48} color="#8b5cf6" />
-        <Text style={styles.exportTitle}>Export Storyboard</Text>
-        <Text style={styles.exportSubtitle}>
-          {currentSession?.storyboardScenes.length || 0} scenes ready • {projectName || 'Untitled'}
+  // Render Step 4: Export
+  const renderStep4 = () => (
+    <Animated.View style={[styles.stepContainer, { opacity: fadeAnim }]}>
+      <View style={styles.stepHeader}>
+        <Ionicons name="download" size={48} color="#10b981" />
+        <Text style={styles.stepTitle}>Export Storyboard</Text>
+        <Text style={styles.stepDescription}>
+          Export GROK 4.1 optimized prompts for each scene
         </Text>
       </View>
 
-      {/* Sticky Backup Options */}
-      <View style={styles.backupOptionsContainer}>
-        <Text style={styles.backupOptionsTitle}>Backup Options</Text>
-        
-        <RadioButton
-          selected={cloudBackup}
-          onPress={() => setCloudBackup(!cloudBackup)}
-          label="CLOUD Backup"
-          sublabel="Upload to Google Drive EXPORTS folder"
-          icon="cloud-outline"
-          disabled={!driveConfigured}
-        />
-        
-        <RadioButton
-          selected={dualBackup}
-          onPress={() => setDualBackup(!dualBackup)}
-          label="DUAL"
-          sublabel="Upload to Google Drive MULTI folder"
-          icon="copy-outline"
-          disabled={!driveConfigured}
-        />
-
-        {!driveConfigured && (
-          <View style={styles.driveNotice}>
-            <Ionicons name="information-circle" size={18} color="#f59e0b" />
-            <Text style={styles.driveNoticeText}>
-              Google Drive not configured. Local storage only.
-            </Text>
-          </View>
-        )}
-
-        <View style={styles.alwaysLocal}>
-          <Ionicons name="phone-portrait-outline" size={16} color="#10b981" />
-          <Text style={styles.alwaysLocalText}>✓ Local storage is always enabled</Text>
-        </View>
-      </View>
-
-      {/* Export Summary */}
       <View style={styles.exportSummary}>
-        <Text style={styles.summaryTitle}>Export Summary:</Text>
-        <Text style={styles.summaryItem}>• Local Storage: Always</Text>
-        {cloudBackup && <Text style={styles.summaryItem}>• EXPORTS Folder: Enabled</Text>}
-        {dualBackup && <Text style={styles.summaryItem}>• MULTI Folder: Enabled</Text>}
+        <Text style={styles.summaryText}>{scenes.length} scenes ready</Text>
+        <Text style={styles.summaryText}>~{scenes.length * 8} seconds runtime</Text>
+        <Text style={styles.summaryText}>Style: {renderStyle}</Text>
       </View>
 
-      {/* Export Result */}
-      {exportResult && (
-        <View style={styles.exportResult}>
-          <Text style={styles.resultTitle}>Export Results:</Text>
-          {exportResult.local_saved && (
-            <View style={styles.resultItem}>
-              <Ionicons name="checkmark-circle" size={18} color="#10b981" />
-              <Text style={styles.resultText}>Local: Saved</Text>
-            </View>
-          )}
-          {exportResult.cloud_backup?.success && (
-            <View style={styles.resultItem}>
-              <Ionicons name="checkmark-circle" size={18} color="#10b981" />
-              <Text style={styles.resultText}>EXPORTS: Uploaded</Text>
-            </View>
-          )}
-          {exportResult.dual_backup?.success && (
-            <View style={styles.resultItem}>
-              <Ionicons name="checkmark-circle" size={18} color="#10b981" />
-              <Text style={styles.resultText}>MULTI: Uploaded</Text>
-            </View>
-          )}
-          {exportResult.errors?.map((err: string, i: number) => (
-            <View key={i} style={styles.resultItem}>
-              <Ionicons name="warning" size={18} color="#f59e0b" />
-              <Text style={styles.resultTextWarning}>{err}</Text>
-            </View>
-          ))}
-        </View>
-      )}
+      {/* Backup Options */}
+      <View style={styles.backupOptions}>
+        <TouchableOpacity
+          style={[styles.backupOption, cloudBackup && styles.backupOptionActive]}
+          onPress={() => setCloudBackup(!cloudBackup)}
+          disabled={!driveConfigured}
+        >
+          <View style={[styles.checkbox, cloudBackup && styles.checkboxActive]}>
+            {cloudBackup && <Ionicons name="checkmark" size={14} color="#fff" />}
+          </View>
+          <Text style={styles.backupLabel}>CLOUD Backup (EXPORTS)</Text>
+        </TouchableOpacity>
 
-      {/* Export Button */}
+        <TouchableOpacity
+          style={[styles.backupOption, dualBackup && styles.backupOptionActive]}
+          onPress={() => setDualBackup(!dualBackup)}
+          disabled={!driveConfigured}
+        >
+          <View style={[styles.checkbox, dualBackup && styles.checkboxActive]}>
+            {dualBackup && <Ionicons name="checkmark" size={14} color="#fff" />}
+          </View>
+          <Text style={styles.backupLabel}>DUAL Backup (MULTI)</Text>
+        </TouchableOpacity>
+
+        <View style={styles.localAlways}>
+          <Ionicons name="phone-portrait" size={16} color="#10b981" />
+          <Text style={styles.localAlwaysText}>Local storage always enabled</Text>
+        </View>
+      </View>
+
       <TouchableOpacity
-        style={[styles.mainExportButton, isExporting && styles.buttonDisabled]}
+        style={[styles.exportButton, isExporting && styles.buttonDisabled]}
         onPress={handleExport}
         disabled={isExporting}
       >
         <LinearGradient
-          colors={isExporting ? ['#3f3f5a', '#3f3f5a'] : ['#8b5cf6', '#6366f1', '#4f46e5']}
-          style={styles.mainExportGradient}
+          colors={isExporting ? ['#3f3f5a', '#3f3f5a'] : ['#8b5cf6', '#6366f1']}
+          style={styles.exportButtonGradient}
         >
           {isExporting ? (
             <>
               <ActivityIndicator color="#fff" size="small" />
-              <Text style={styles.mainExportText}>Exporting...</Text>
+              <Text style={styles.exportButtonText}>Exporting...</Text>
             </>
           ) : (
             <>
               <Ionicons name="download" size={24} color="#fff" />
-              <Text style={styles.mainExportText}>EXPORT</Text>
+              <Text style={styles.exportButtonText}>EXPORT</Text>
             </>
           )}
         </LinearGradient>
       </TouchableOpacity>
 
-      {/* Back to Editor */}
-      <TouchableOpacity style={styles.backToEditor} onPress={() => setStep(2)}>
+      <TouchableOpacity style={styles.backButton} onPress={() => setStep(3)}>
         <Ionicons name="arrow-back" size={18} color="#8b5cf6" />
-        <Text style={styles.backToEditorText}>Back to Storyboard</Text>
+        <Text style={styles.backButtonText}>Back to Scenes</Text>
       </TouchableOpacity>
     </Animated.View>
   );
@@ -785,51 +585,35 @@ export default function StoryboardCreator() {
       resizeMode="cover"
     >
       <LinearGradient
-        colors={['rgba(10, 10, 18, 0.92)', 'rgba(10, 10, 18, 0.95)', 'rgba(10, 10, 18, 0.98)']}
+        colors={['rgba(10, 10, 18, 0.92)', 'rgba(10, 10, 18, 0.96)', 'rgba(10, 10, 18, 0.98)']}
         style={StyleSheet.absoluteFill}
       />
 
       <View style={[styles.container, { paddingTop: insets.top }]}>
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+          <TouchableOpacity style={styles.headerButton} onPress={() => router.back()}>
             <Ionicons name="arrow-back" size={22} color="#fff" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>
-            {step === 1 ? 'Storyboard Creator' : step === 2 ? 'Edit Storyboard' : 'Export'}
+            {step === 1 ? 'New Project' : step === 2 ? 'Generate' : step === 3 ? 'Edit Scenes' : 'Export'}
           </Text>
-          {step === 2 && (
-            <TouchableOpacity style={styles.backButton} onPress={() => setStep(1)}>
-              <Ionicons name="settings-outline" size={20} color="#8b5cf6" />
-            </TouchableOpacity>
-          )}
-          {(step === 1 || step === 3) && <View style={{ width: 40 }} />}
+          <View style={{ width: 40 }} />
         </View>
 
-        {/* Progress Steps */}
-        <View style={styles.progressSteps}>
-          {[1, 2, 3].map((s) => (
-            <View key={s} style={styles.progressStepContainer}>
-              <View style={[styles.progressStep, step >= s && styles.progressStepActive]}>
-                <Text style={[styles.progressStepText, step >= s && styles.progressStepTextActive]}>
-                  {s}
-                </Text>
-              </View>
-              {s < 3 && <View style={[styles.progressLine, step > s && styles.progressLineActive]} />}
+        {/* Progress */}
+        <View style={styles.progress}>
+          {[1, 2, 3, 4].map((s) => (
+            <View key={s} style={styles.progressItem}>
+              <View style={[styles.progressDot, step >= s && styles.progressDotActive]} />
+              {s < 4 && <View style={[styles.progressLine, step > s && styles.progressLineActive]} />}
             </View>
           ))}
-        </View>
-
-        {/* Auto-save indicator */}
-        <View style={styles.autoSaveIndicator}>
-          <View style={styles.autoSaveDot} />
-          <Text style={styles.autoSaveText}>Auto-saving</Text>
         </View>
 
         <KeyboardAvoidingView
           style={styles.content}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={100}
         >
           <ScrollView
             style={styles.scrollView}
@@ -837,9 +621,10 @@ export default function StoryboardCreator() {
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
-            {step === 1 && renderSetupStep()}
-            {step === 2 && renderStoryboardEditor()}
-            {step === 3 && renderExportStep()}
+            {step === 1 && renderStep1()}
+            {step === 2 && renderStep2()}
+            {step === 3 && renderStep3()}
+            {step === 4 && renderStep4()}
           </ScrollView>
         </KeyboardAvoidingView>
       </View>
@@ -849,41 +634,38 @@ export default function StoryboardCreator() {
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { paddingBottom: insets.bottom + 20 }]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                {editingScene?.id ? 'Edit Scene' : 'New Scene'} #{editingScene?.blockNumber}
-              </Text>
+              <Text style={styles.modalTitle}>Edit Scene #{editingScene?.segment_number}</Text>
               <TouchableOpacity onPress={() => setShowSceneModal(false)}>
                 <Ionicons name="close" size={24} color="#fff" />
               </TouchableOpacity>
             </View>
 
             <ScrollView style={styles.modalScroll}>
-              <Text style={styles.modalLabel}>Lyric Segment</Text>
+              <Text style={styles.modalLabel}>Scene Description</Text>
               <TextInput
-                style={styles.modalInput}
-                value={editingScene?.lyricSegment}
-                onChangeText={(text) => setEditingScene(prev => prev ? {...prev, lyricSegment: text} : null)}
-                placeholder="The lyrics for this scene..."
+                style={styles.modalInputLarge}
+                value={editingScene?.description}
+                onChangeText={(text) => setEditingScene((prev: any) => prev ? { ...prev, description: text } : null)}
+                placeholder="Describe the visual..."
                 placeholderTextColor="#6b7280"
                 multiline
               />
 
-              <Text style={styles.modalLabel}>Scene Description</Text>
+              <Text style={styles.modalLabel}>Render Style</Text>
               <TextInput
-                style={styles.modalInputLarge}
-                value={editingScene?.sceneDescription}
-                onChangeText={(text) => setEditingScene(prev => prev ? {...prev, sceneDescription: text} : null)}
-                placeholder="Detailed visual description..."
+                style={styles.modalInput}
+                value={editingScene?.render_style || renderStyle}
+                onChangeText={(text) => setEditingScene((prev: any) => prev ? { ...prev, render_style: text } : null)}
+                placeholder="cinematic photorealistic"
                 placeholderTextColor="#6b7280"
-                multiline
               />
 
               <Text style={styles.modalLabel}>Camera Movement</Text>
               <TextInput
                 style={styles.modalInput}
-                value={editingScene?.cameraMovement}
-                onChangeText={(text) => setEditingScene(prev => prev ? {...prev, cameraMovement: text} : null)}
-                placeholder="e.g., Slow dolly in, aerial tracking..."
+                value={editingScene?.camera_movement}
+                onChangeText={(text) => setEditingScene((prev: any) => prev ? { ...prev, camera_movement: text } : null)}
+                placeholder="Slow dolly, tracking shot..."
                 placeholderTextColor="#6b7280"
               />
 
@@ -891,43 +673,24 @@ export default function StoryboardCreator() {
               <TextInput
                 style={styles.modalInput}
                 value={editingScene?.lighting}
-                onChangeText={(text) => setEditingScene(prev => prev ? {...prev, lighting: text} : null)}
-                placeholder="e.g., Neon glow, dramatic shadows..."
+                onChangeText={(text) => setEditingScene((prev: any) => prev ? { ...prev, lighting: text } : null)}
+                placeholder="Neon glow, dramatic shadows..."
                 placeholderTextColor="#6b7280"
               />
 
-              <Text style={styles.modalLabel}>Mood/Atmosphere</Text>
+              <Text style={styles.modalLabel}>Mood</Text>
               <TextInput
                 style={styles.modalInput}
                 value={editingScene?.mood}
-                onChangeText={(text) => setEditingScene(prev => prev ? {...prev, mood: text} : null)}
-                placeholder="e.g., Tense, ethereal, triumphant..."
-                placeholderTextColor="#6b7280"
-              />
-
-              <Text style={styles.modalLabel}>Character Actions</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={editingScene?.characterActions}
-                onChangeText={(text) => setEditingScene(prev => prev ? {...prev, characterActions: text} : null)}
-                placeholder="What characters do in this scene..."
-                placeholderTextColor="#6b7280"
-                multiline
-              />
-
-              <Text style={styles.modalLabel}>Visual Style</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={editingScene?.visualStyle}
-                onChangeText={(text) => setEditingScene(prev => prev ? {...prev, visualStyle: text} : null)}
-                placeholder="e.g., Cinematic, CGI, photorealistic..."
+                onChangeText={(text) => setEditingScene((prev: any) => prev ? { ...prev, mood: text } : null)}
+                placeholder="Intense, ethereal, triumphant..."
                 placeholderTextColor="#6b7280"
               />
             </ScrollView>
 
-            <TouchableOpacity style={styles.modalSaveButton} onPress={handleSaveScene}>
+            <TouchableOpacity style={styles.modalSaveButton} onPress={handleSaveSceneEdit}>
               <LinearGradient colors={['#8b5cf6', '#6366f1']} style={styles.modalSaveGradient}>
-                <Text style={styles.modalSaveText}>Save Scene</Text>
+                <Text style={styles.modalSaveText}>Save Changes</Text>
               </LinearGradient>
             </TouchableOpacity>
           </View>
@@ -938,16 +701,16 @@ export default function StoryboardCreator() {
 }
 
 const styles = StyleSheet.create({
-  backgroundImage: { flex: 1, width: '100%', height: '100%' },
+  backgroundImage: { flex: 1 },
   container: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     paddingVertical: 10,
   },
-  backButton: {
+  headerButton: {
     width: 40,
     height: 40,
     borderRadius: 20,
@@ -956,98 +719,40 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   headerTitle: { fontSize: 17, fontWeight: '700', color: '#fff' },
-  progressSteps: {
+  progress: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     paddingVertical: 8,
   },
-  progressStepContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  progressItem: { flexDirection: 'row', alignItems: 'center' },
+  progressDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#3f3f5a',
   },
-  progressStep: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#2d2d44',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  progressStepActive: {
-    backgroundColor: '#8b5cf6',
-  },
-  progressStepText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#6b7280',
-  },
-  progressStepTextActive: {
-    color: '#fff',
-  },
+  progressDotActive: { backgroundColor: '#8b5cf6' },
   progressLine: {
-    width: 40,
+    width: 30,
     height: 2,
-    backgroundColor: '#2d2d44',
+    backgroundColor: '#3f3f5a',
     marginHorizontal: 4,
   },
-  progressLineActive: {
-    backgroundColor: '#8b5cf6',
-  },
-  autoSaveIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 4,
-    gap: 6,
-  },
-  autoSaveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#10b981',
-  },
-  autoSaveText: { fontSize: 10, color: '#10b981' },
+  progressLineActive: { backgroundColor: '#8b5cf6' },
   content: { flex: 1 },
   scrollView: { flex: 1 },
-  scrollContent: { paddingHorizontal: 16, paddingBottom: 40 },
+  scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
   stepContainer: { flex: 1 },
-  modeSelector: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(45, 45, 68, 0.4)',
-    borderRadius: 12,
-    padding: 4,
-    marginBottom: 12,
-  },
-  modeButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    borderRadius: 10,
-    gap: 6,
-  },
-  modeButtonActive: { backgroundColor: '#8b5cf6' },
-  modeButtonText: { fontSize: 13, fontWeight: '600', color: '#8b5cf6' },
-  modeButtonTextActive: { color: '#fff' },
-  modeDescription: {
-    fontSize: 12,
-    color: '#6b7280',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  inputLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#9ca3af',
-    marginBottom: 6,
-    marginLeft: 2,
-  },
+  stepHeader: { alignItems: 'center', marginBottom: 24 },
+  stepTitle: { fontSize: 22, fontWeight: '700', color: '#fff', marginTop: 12 },
+  stepDescription: { fontSize: 13, color: '#9ca3af', textAlign: 'center', marginTop: 8, paddingHorizontal: 20 },
+  inputLabel: { fontSize: 13, fontWeight: '600', color: '#9ca3af', marginBottom: 6 },
+  inputHint: { fontSize: 11, color: '#6b7280', marginBottom: 8, marginTop: -4 },
   input: {
     backgroundColor: 'rgba(45, 45, 68, 0.5)',
     borderRadius: 10,
-    padding: 12,
+    padding: 14,
     fontSize: 15,
     color: '#fff',
     borderWidth: 1,
@@ -1057,56 +762,50 @@ const styles = StyleSheet.create({
   lyricsInput: {
     backgroundColor: 'rgba(45, 45, 68, 0.5)',
     borderRadius: 10,
-    padding: 12,
+    padding: 14,
     fontSize: 14,
     color: '#fff',
     borderWidth: 1,
     borderColor: 'rgba(139, 92, 246, 0.3)',
     marginBottom: 16,
-    minHeight: 150,
-    maxHeight: 200,
+    minHeight: 100,
+    maxHeight: 150,
   },
-  themeInput: {
-    backgroundColor: 'rgba(45, 45, 68, 0.5)',
-    borderRadius: 10,
-    padding: 12,
-    fontSize: 14,
-    color: '#fff',
-    borderWidth: 1,
-    borderColor: 'rgba(139, 92, 246, 0.3)',
-    marginBottom: 16,
-    minHeight: 70,
+  uploadBox: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginBottom: 20,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(139, 92, 246, 0.4)',
   },
-  durationSelector: { marginBottom: 20 },
-  durationButtons: { flexDirection: 'row', gap: 10, marginTop: 8 },
-  durationButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: 'rgba(45, 45, 68, 0.5)',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(139, 92, 246, 0.3)',
-  },
-  durationButtonActive: { backgroundColor: '#8b5cf6', borderColor: '#8b5cf6' },
-  durationButtonText: { fontSize: 14, fontWeight: '600', color: '#8b5cf6' },
-  durationButtonTextActive: { color: '#fff' },
-  actionButtons: { marginTop: 10 },
-  generateButton: { borderRadius: 12, overflow: 'hidden' },
+  uploadBoxGradient: { padding: 32, alignItems: 'center' },
+  uploadText: { fontSize: 15, fontWeight: '600', color: '#8b5cf6', marginTop: 12 },
+  uploadSubtext: { fontSize: 12, color: '#6b7280', marginTop: 4 },
+  uploadedFileName: { fontSize: 14, fontWeight: '600', color: '#10b981', marginTop: 12 },
+  primaryButton: { borderRadius: 12, overflow: 'hidden', marginTop: 8 },
   buttonDisabled: { opacity: 0.6 },
-  generateButtonGradient: {
+  primaryButtonGradient: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 14,
+    paddingVertical: 16,
     gap: 10,
   },
-  generateButtonText: { fontSize: 15, fontWeight: '700', color: '#fff' },
-  editorContainer: { flex: 1 },
-  editorHeader: { marginBottom: 16 },
-  editorTitle: { fontSize: 20, fontWeight: '700', color: '#fff' },
-  editorSubtitle: { fontSize: 12, color: '#6b7280', marginTop: 2 },
-  scenesList: { flex: 1 },
+  primaryButtonText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  analysisSummary: {
+    backgroundColor: 'rgba(139, 92, 246, 0.1)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(139, 92, 246, 0.3)',
+  },
+  analysisRow: { flexDirection: 'row', justifyContent: 'space-around' },
+  analysisItem: { alignItems: 'center' },
+  analysisValue: { fontSize: 20, fontWeight: '700', color: '#8b5cf6' },
+  analysisLabel: { fontSize: 11, color: '#9ca3af', marginTop: 4 },
+  scenesList: { flex: 1, maxHeight: 400 },
   sceneCard: {
     borderRadius: 12,
     overflow: 'hidden',
@@ -1131,201 +830,73 @@ const styles = StyleSheet.create({
   },
   sceneNumberText: { fontSize: 12, fontWeight: '700', color: '#fff' },
   sceneTime: { flex: 1, fontSize: 11, color: '#6b7280' },
-  sceneLyric: {
-    fontSize: 12,
-    color: '#c4b5fd',
-    fontStyle: 'italic',
-    marginBottom: 6,
-  },
-  sceneDesc: { fontSize: 13, color: '#e5e7eb', lineHeight: 18, marginBottom: 8 },
-  sceneTags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  sceneTag: {
-    backgroundColor: 'rgba(139, 92, 246, 0.2)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  sceneTagText: { fontSize: 10, color: '#a78bfa' },
-  addSceneButton: {
+  energyBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 },
+  energyText: { fontSize: 10, fontWeight: '600' },
+  sceneDescription: { fontSize: 13, color: '#e5e7eb', lineHeight: 18 },
+  sceneFooter: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderStyle: 'dashed',
-    borderColor: 'rgba(139, 92, 246, 0.4)',
     marginTop: 8,
-    gap: 8,
   },
-  addSceneText: { fontSize: 14, fontWeight: '600', color: '#8b5cf6' },
-  bottomActions: {
-    flexDirection: 'row',
-    gap: 10,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(139, 92, 246, 0.2)',
-  },
-  saveButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 10,
-    backgroundColor: 'rgba(139, 92, 246, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(139, 92, 246, 0.3)',
-    gap: 6,
-  },
-  saveButtonText: { fontSize: 14, fontWeight: '600', color: '#8b5cf6' },
-  exportButton: { flex: 1, borderRadius: 10, overflow: 'hidden' },
-  exportButtonGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    gap: 8,
-  },
-  exportButtonText: { fontSize: 14, fontWeight: '700', color: '#fff' },
-  
-  // Export Step Styles
-  exportContainer: { flex: 1, alignItems: 'center' },
-  exportHeader: { alignItems: 'center', marginBottom: 24 },
-  exportTitle: { fontSize: 24, fontWeight: '700', color: '#fff', marginTop: 12 },
-  exportSubtitle: { fontSize: 13, color: '#6b7280', marginTop: 4 },
-  
-  backupOptionsContainer: {
-    width: '100%',
-    backgroundColor: 'rgba(45, 45, 68, 0.4)',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(139, 92, 246, 0.3)',
-  },
-  backupOptionsTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#fff',
-    marginBottom: 12,
-  },
-  radioButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(139, 92, 246, 0.1)',
+  sceneStyle: { fontSize: 10, color: '#6b7280' },
+  exportSummary: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
     borderRadius: 12,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(139, 92, 246, 0.2)',
+    padding: 16,
+    marginBottom: 20,
+    alignItems: 'center',
   },
-  radioButtonSelected: {
+  summaryText: { fontSize: 14, color: '#10b981', marginBottom: 4 },
+  backupOptions: { marginBottom: 20 },
+  backupOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    backgroundColor: 'rgba(45, 45, 68, 0.4)',
+    borderRadius: 10,
+    marginBottom: 10,
+    gap: 12,
+  },
+  backupOptionActive: {
     backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderWidth: 1,
     borderColor: 'rgba(16, 185, 129, 0.4)',
   },
-  radioButtonDisabled: {
-    opacity: 0.5,
-  },
-  radioOuter: {
+  checkbox: {
     width: 22,
     height: 22,
-    borderRadius: 11,
+    borderRadius: 6,
     borderWidth: 2,
     borderColor: '#6b7280',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
   },
-  radioOuterSelected: {
-    borderColor: '#10b981',
-  },
-  radioInner: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#10b981',
-  },
-  radioContent: { flex: 1 },
-  radioHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  radioLabel: { fontSize: 15, fontWeight: '600', color: '#fff' },
-  radioLabelSelected: { color: '#10b981' },
-  radioSublabel: { fontSize: 11, color: '#6b7280', marginTop: 2, marginLeft: 26 },
-  
-  driveNotice: {
+  checkboxActive: { backgroundColor: '#10b981', borderColor: '#10b981' },
+  backupLabel: { fontSize: 14, color: '#fff' },
+  localAlways: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
-    padding: 10,
-    borderRadius: 8,
     gap: 8,
     marginTop: 8,
   },
-  driveNoticeText: { flex: 1, fontSize: 11, color: '#f59e0b' },
-  
-  alwaysLocal: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(139, 92, 246, 0.2)',
-  },
-  alwaysLocalText: { fontSize: 12, color: '#10b981' },
-  
-  exportSummary: {
-    width: '100%',
-    backgroundColor: 'rgba(139, 92, 246, 0.1)',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 16,
-  },
-  summaryTitle: { fontSize: 13, fontWeight: '600', color: '#fff', marginBottom: 8 },
-  summaryItem: { fontSize: 12, color: '#a78bfa', marginBottom: 4 },
-  
-  exportResult: {
-    width: '100%',
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  resultTitle: { fontSize: 13, fontWeight: '600', color: '#10b981', marginBottom: 8 },
-  resultItem: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
-  resultText: { fontSize: 12, color: '#34d399' },
-  resultTextWarning: { fontSize: 12, color: '#fbbf24' },
-  
-  mainExportButton: {
-    width: '100%',
-    borderRadius: 14,
-    overflow: 'hidden',
-    shadowColor: '#8b5cf6',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    elevation: 8,
-    marginBottom: 16,
-  },
-  mainExportGradient: {
+  localAlwaysText: { fontSize: 12, color: '#10b981' },
+  exportButton: { borderRadius: 14, overflow: 'hidden', marginBottom: 16 },
+  exportButtonGradient: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 18,
     gap: 12,
   },
-  mainExportText: { fontSize: 18, fontWeight: '800', color: '#fff', letterSpacing: 1 },
-  
-  backToEditor: {
+  exportButtonText: { fontSize: 18, fontWeight: '800', color: '#fff' },
+  backButton: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 6,
   },
-  backToEditorText: { fontSize: 14, color: '#8b5cf6' },
-  
-  // Modal Styles
+  backButtonText: { fontSize: 14, color: '#8b5cf6' },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.85)',
@@ -1336,7 +907,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 16,
-    maxHeight: '85%',
+    maxHeight: '80%',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1345,19 +916,13 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   modalTitle: { fontSize: 18, fontWeight: '700', color: '#fff' },
-  modalScroll: { maxHeight: 400 },
-  modalLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#9ca3af',
-    marginBottom: 4,
-    marginTop: 10,
-  },
+  modalScroll: { maxHeight: 350 },
+  modalLabel: { fontSize: 12, fontWeight: '600', color: '#9ca3af', marginBottom: 4, marginTop: 12 },
   modalInput: {
     backgroundColor: 'rgba(45, 45, 68, 0.5)',
     borderRadius: 8,
-    padding: 10,
-    fontSize: 13,
+    padding: 12,
+    fontSize: 14,
     color: '#fff',
     borderWidth: 1,
     borderColor: 'rgba(139, 92, 246, 0.3)',
@@ -1365,15 +930,15 @@ const styles = StyleSheet.create({
   modalInputLarge: {
     backgroundColor: 'rgba(45, 45, 68, 0.5)',
     borderRadius: 8,
-    padding: 10,
-    fontSize: 13,
+    padding: 12,
+    fontSize: 14,
     color: '#fff',
     borderWidth: 1,
     borderColor: 'rgba(139, 92, 246, 0.3)',
-    minHeight: 80,
+    minHeight: 100,
     textAlignVertical: 'top',
   },
   modalSaveButton: { borderRadius: 10, overflow: 'hidden', marginTop: 16 },
-  modalSaveGradient: { paddingVertical: 12, alignItems: 'center' },
+  modalSaveGradient: { paddingVertical: 14, alignItems: 'center' },
   modalSaveText: { fontSize: 15, fontWeight: '700', color: '#fff' },
 });
