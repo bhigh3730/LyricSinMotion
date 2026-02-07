@@ -6,7 +6,7 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime
 import base64
@@ -14,6 +14,7 @@ import json
 import tempfile
 import asyncio
 import io
+import numpy as np
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -48,7 +49,7 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # Create the main app without a prefix
-app = FastAPI(title="LyricMotion API", version="1.0.0")
+app = FastAPI(title="LyricSiNMotion API", version="1.0.0")
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -59,6 +60,128 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+# ===================== AUDIO ANALYSIS FUNCTIONS =====================
+
+def analyze_audio_file(file_path: str) -> Dict[str, Any]:
+    """
+    Analyze audio file using librosa to extract:
+    - Duration, tempo, beats
+    - Energy profile per segment
+    - Rhythm patterns
+    - Section detection (verse, chorus, etc.)
+    """
+    try:
+        import librosa
+        
+        # Load audio file
+        y, sr = librosa.load(file_path, sr=22050)
+        duration = librosa.get_duration(y=y, sr=sr)
+        
+        # Tempo and beat detection
+        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+        beat_times = librosa.frames_to_time(beat_frames, sr=sr).tolist()
+        
+        # Handle tempo - convert to float properly
+        if hasattr(tempo, '__len__'):
+            tempo = float(tempo[0]) if len(tempo) > 0 else 120.0
+        else:
+            tempo = float(tempo)
+        
+        # Energy analysis (RMS)
+        rms = librosa.feature.rms(y=y)[0]
+        
+        # Segment audio into 8-second blocks
+        segment_duration = 8.0
+        num_segments = int(np.ceil(duration / segment_duration))
+        
+        segments = []
+        samples_per_segment = int(segment_duration * sr)
+        rms_per_frame = len(y) / len(rms)
+        
+        for i in range(num_segments):
+            start_time = i * segment_duration
+            end_time = min((i + 1) * segment_duration, duration)
+            
+            # Get samples for this segment
+            start_sample = int(start_time * sr)
+            end_sample = int(end_time * sr)
+            segment_audio = y[start_sample:end_sample]
+            
+            # Calculate energy for this segment
+            start_frame = int(start_sample / rms_per_frame)
+            end_frame = int(end_sample / rms_per_frame)
+            segment_rms = rms[start_frame:end_frame]
+            avg_energy = float(np.mean(segment_rms)) if len(segment_rms) > 0 else 0.5
+            
+            # Normalize energy to 0-1 scale
+            max_rms = float(np.max(rms)) if np.max(rms) > 0 else 1.0
+            normalized_energy = avg_energy / max_rms
+            
+            # Count beats in this segment
+            segment_beats = [b for b in beat_times if start_time <= b < end_time]
+            beat_density = len(segment_beats) / segment_duration
+            
+            # Determine intensity level
+            if normalized_energy > 0.7:
+                intensity = "high"
+            elif normalized_energy > 0.4:
+                intensity = "medium"
+            else:
+                intensity = "low"
+            
+            # Estimate section type based on position and energy
+            position_ratio = i / num_segments
+            if position_ratio < 0.1:
+                section_type = "intro"
+            elif position_ratio > 0.9:
+                section_type = "outro"
+            elif normalized_energy > 0.6 and beat_density > 1.5:
+                section_type = "chorus"
+            elif normalized_energy < 0.3:
+                section_type = "bridge"
+            else:
+                section_type = "verse"
+            
+            segments.append({
+                "segment_number": i + 1,
+                "start_time": round(start_time, 2),
+                "end_time": round(end_time, 2),
+                "energy": round(normalized_energy, 3),
+                "intensity": intensity,
+                "beat_density": round(beat_density, 2),
+                "beats_in_segment": len(segment_beats),
+                "section_type": section_type
+            })
+        
+        return {
+            "duration": round(duration, 2),
+            "tempo": round(tempo, 1),
+            "total_beats": len(beat_times),
+            "beat_times": beat_times[:50],  # First 50 beats for reference
+            "num_segments": num_segments,
+            "segments": segments,
+            "avg_energy": round(float(np.mean(rms)) / max_rms, 3),
+            "energy_variance": round(float(np.std(rms)), 4)
+        }
+        
+    except Exception as e:
+        logger.error(f"Audio analysis error: {e}")
+        # Return fallback analysis
+        estimated_duration = 180  # 3 minutes default
+        return {
+            "duration": estimated_duration,
+            "tempo": 120.0,
+            "total_beats": int(estimated_duration * 2),
+            "beat_times": [],
+            "num_segments": int(estimated_duration / 8),
+            "segments": [],
+            "avg_energy": 0.5,
+            "energy_variance": 0.1,
+            "error": str(e)
+        }
+
 
 # ===================== MODELS =====================
 
