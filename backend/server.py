@@ -294,7 +294,7 @@ async def delete_project(project_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     return {"message": "Project deleted successfully"}
 
-# Audio Upload
+# Audio Upload with REAL analysis
 @api_router.post("/projects/{project_id}/audio")
 async def upload_audio(project_id: str, audio: UploadFile = File(...)):
     project = await db.projects.find_one({"id": project_id})
@@ -302,51 +302,290 @@ async def upload_audio(project_id: str, audio: UploadFile = File(...)):
         raise HTTPException(status_code=404, detail="Project not found")
     
     # Validate file type
-    if not audio.filename.lower().endswith(('.mp3', '.wav', '.m4a')):
-        raise HTTPException(status_code=400, detail="Only MP3, WAV, and M4A files are supported")
+    if not audio.filename.lower().endswith(('.mp3', '.wav', '.m4a', '.ogg', '.flac')):
+        raise HTTPException(status_code=400, detail="Supported formats: MP3, WAV, M4A, OGG, FLAC")
     
-    # Read and analyze audio
+    # Save audio temporarily for analysis
     content = await audio.read()
     
-    # Mock audio analysis (in production, use librosa)
-    # For demo, we'll estimate duration based on file size
-    file_size = len(content)
-    estimated_duration = min(file_size / 16000, 240)  # Rough estimate, max 4 min
+    with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp_file:
+        tmp_file.write(content)
+        tmp_path = tmp_file.name
     
-    # Create mock audio analysis
-    audio_analysis = {
-        "duration": estimated_duration,
-        "tempo": 120.0,  # Mock BPM
-        "beats": [i * 0.5 for i in range(int(estimated_duration * 2))],  # Mock beats
-        "sections": [
-            {"name": "intro", "start": 0, "end": estimated_duration * 0.1},
-            {"name": "verse1", "start": estimated_duration * 0.1, "end": estimated_duration * 0.3},
-            {"name": "chorus1", "start": estimated_duration * 0.3, "end": estimated_duration * 0.45},
-            {"name": "verse2", "start": estimated_duration * 0.45, "end": estimated_duration * 0.6},
-            {"name": "chorus2", "start": estimated_duration * 0.6, "end": estimated_duration * 0.75},
-            {"name": "bridge", "start": estimated_duration * 0.75, "end": estimated_duration * 0.85},
-            {"name": "outro", "start": estimated_duration * 0.85, "end": estimated_duration},
-        ],
-        "energy_profile": [0.3, 0.5, 0.8, 0.6, 0.9, 0.7, 0.4]  # Mock energy per section
-    }
+    try:
+        # REAL audio analysis using librosa
+        analysis = analyze_audio_file(tmp_path)
+        
+        # Store audio data in database for later use
+        audio_data = base64.b64encode(content).decode('utf-8')
+        
+        # Update project with analysis
+        await db.projects.update_one(
+            {"id": project_id},
+            {"$set": {
+                "audio_filename": audio.filename,
+                "audio_duration": analysis["duration"],
+                "audio_analysis": analysis,
+                "audio_data": audio_data,  # Store audio for playback reference
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        
+        return {
+            "message": "Audio analyzed successfully",
+            "filename": audio.filename,
+            "duration": analysis["duration"],
+            "tempo": analysis["tempo"],
+            "total_segments": analysis["num_segments"],
+            "analysis": analysis
+        }
+    finally:
+        # Clean up temp file
+        os.unlink(tmp_path)
+
+
+# ==================== MAIN AUTO-GENERATION ENDPOINT ====================
+
+class AutoGenerateRequest(BaseModel):
+    project_id: str
+    lyrics: Optional[str] = None  # Optional - helps AI understand unclear words
+    render_style: Optional[str] = None  # Retained style from previous successful renders
+    scene_type: Optional[str] = None  # Optional scene type preference
+
+@api_router.post("/projects/{project_id}/auto-generate")
+async def auto_generate_scenes(project_id: str, request: AutoGenerateRequest):
+    """
+    MAIN FUNCTION: Automatically generate ALL scene descriptions from audio + optional lyrics.
     
-    # Update project
+    1. Uses audio analysis (rhythm, beats, energy) to understand the song
+    2. Lyrics help clarify unclear words/slang (optional)
+    3. AI generates scene descriptions for every 8-second segment
+    4. User can then edit scene descriptions and render style
+    """
+    project = await db.projects.find_one({"id": project_id})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    audio_analysis = project.get("audio_analysis")
+    if not audio_analysis:
+        raise HTTPException(status_code=400, detail="Upload audio first - AI needs to analyze the rhythm")
+    
+    # Update status
+    await db.projects.update_one(
+        {"id": project_id},
+        {"$set": {"status": "processing"}}
+    )
+    
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        
+        api_key = os.environ.get('EMERGENT_LLM_KEY')
+        if not api_key:
+            raise HTTPException(status_code=500, detail="LLM API key not configured")
+        
+        # Get segments from audio analysis
+        segments = audio_analysis.get("segments", [])
+        if not segments:
+            # Create default segments based on duration
+            duration = audio_analysis.get("duration", 180)
+            num_segments = int(duration / 8)
+            segments = [
+                {
+                    "segment_number": i + 1,
+                    "start_time": i * 8,
+                    "end_time": min((i + 1) * 8, duration),
+                    "intensity": "medium",
+                    "section_type": "verse",
+                    "energy": 0.5
+                }
+                for i in range(num_segments)
+            ]
+        
+        # Prepare context for AI
+        lyrics = request.lyrics or project.get("lyrics", "")
+        render_style = request.render_style or "cinematic photorealistic"
+        tempo = audio_analysis.get("tempo", 120)
+        
+        # Initialize Claude
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"autogen-{project_id}",
+            system_message=f"""You are an expert music video director and scene writer.
+Your job is to create vivid, cinematic scene descriptions that match the RHYTHM and ENERGY of music.
+
+CRITICAL RULES:
+1. Each scene MUST sync with the audio's rhythm - use the tempo ({tempo} BPM) and energy levels
+2. High energy = fast cuts, dynamic movement, intense visuals
+3. Low energy = slow motion, contemplative shots, atmospheric scenes
+4. If lyrics are provided, they CLARIFY meaning - don't just visualize words literally
+5. Create VISUAL METAPHORS that capture the FEELING of the lyrics
+6. NO text/subtitles on screen - only pure visual storytelling
+7. Each description should be 2-3 detailed sentences
+
+RENDER STYLE TO USE: {render_style}
+(Apply this style consistently unless user changes it)
+
+Output ONLY valid JSON array."""
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        
+        # Build the prompt with all segment data
+        segments_info = json.dumps(segments, indent=2)
+        
+        prompt = f"""Analyze this song and create scene descriptions for EVERY segment.
+
+AUDIO ANALYSIS:
+- Duration: {audio_analysis.get('duration', 180)} seconds
+- Tempo: {tempo} BPM
+- Total Segments: {len(segments)}
+- Average Energy: {audio_analysis.get('avg_energy', 0.5)}
+
+SEGMENT DATA (rhythm/energy per 8-second block):
+{segments_info}
+
+{"LYRICS (to help understand the song - some words may be slang or unclear):" if lyrics else "NO LYRICS PROVIDED - create abstract visual story based on rhythm:"}
+{lyrics if lyrics else ""}
+
+RENDER STYLE: {render_style}
+
+Generate a scene description for EACH of the {len(segments)} segments.
+Match the scene intensity to the segment energy level.
+Sync camera movements to the beat (tempo: {tempo} BPM).
+
+Output JSON array:
+[
+  {{
+    "segment_number": 1,
+    "start_time": 0,
+    "end_time": 8,
+    "scene_description": "Detailed cinematic description matching the rhythm and energy...",
+    "camera_movement": "Movement synced to {tempo} BPM...",
+    "lighting": "Lighting that matches the mood...",
+    "mood": "Emotional tone of this segment...",
+    "render_style": "{render_style}",
+    "grok_prompt": "Complete prompt optimized for GROK 4.1 text-to-video generation..."
+  }}
+]"""
+        
+        user_message = UserMessage(text=prompt)
+        response = await chat.send_message(user_message)
+        
+        # Parse response
+        response_text = response.strip()
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0]
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0]
+        
+        scenes_data = json.loads(response_text)
+        
+        # Format scenes for storage
+        storyboard = []
+        for scene in scenes_data:
+            formatted_scene = {
+                "id": str(uuid.uuid4()),
+                "segment_number": scene.get("segment_number", len(storyboard) + 1),
+                "start_time": scene.get("start_time", len(storyboard) * 8),
+                "end_time": scene.get("end_time", (len(storyboard) + 1) * 8),
+                "description": scene.get("scene_description", ""),
+                "camera_movement": scene.get("camera_movement", ""),
+                "lighting": scene.get("lighting", ""),
+                "mood": scene.get("mood", ""),
+                "character_actions": scene.get("character_actions", ""),
+                "lyric_segment": scene.get("lyric_segment", ""),
+                "render_style": scene.get("render_style", render_style),
+                "grok_prompt": scene.get("grok_prompt", ""),
+                "energy": segments[scene.get("segment_number", 1) - 1].get("energy", 0.5) if scene.get("segment_number", 1) <= len(segments) else 0.5,
+                "section_type": segments[scene.get("segment_number", 1) - 1].get("section_type", "verse") if scene.get("segment_number", 1) <= len(segments) else "verse"
+            }
+            storyboard.append(formatted_scene)
+        
+        # Save storyboard and update project
+        await db.projects.update_one(
+            {"id": project_id},
+            {"$set": {
+                "storyboard": storyboard,
+                "status": "storyboard_ready",
+                "lyrics": lyrics if lyrics else project.get("lyrics"),
+                "retained_render_style": render_style,
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        
+        return {
+            "message": f"Auto-generated {len(storyboard)} scenes successfully!",
+            "total_scenes": len(storyboard),
+            "duration": audio_analysis.get("duration"),
+            "render_style": render_style,
+            "scenes": storyboard
+        }
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse AI response: {e}")
+        await db.projects.update_one({"id": project_id}, {"$set": {"status": "draft"}})
+        raise HTTPException(status_code=500, detail="AI response parsing failed - please try again")
+    except Exception as e:
+        logger.error(f"Auto-generation error: {e}")
+        await db.projects.update_one({"id": project_id}, {"$set": {"status": "draft"}})
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Update single scene (user edits)
+@api_router.put("/projects/{project_id}/scenes/{scene_id}")
+async def update_single_scene(project_id: str, scene_id: str, update: SceneUpdateRequest):
+    """User edits a single scene description or render style"""
+    project = await db.projects.find_one({"id": project_id})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    storyboard = project.get("storyboard", [])
+    scene_found = False
+    
+    for i, scene in enumerate(storyboard):
+        if scene.get("id") == scene_id:
+            for key, value in update.dict().items():
+                if value is not None and key not in ["project_id", "scene_id"]:
+                    storyboard[i][key] = value
+            scene_found = True
+            break
+    
+    if not scene_found:
+        raise HTTPException(status_code=404, detail="Scene not found")
+    
     await db.projects.update_one(
         {"id": project_id},
         {"$set": {
-            "audio_filename": audio.filename,
-            "audio_duration": estimated_duration,
-            "audio_analysis": audio_analysis,
+            "storyboard": storyboard,
             "updated_at": datetime.utcnow()
         }}
     )
     
-    return {
-        "message": "Audio uploaded successfully",
-        "filename": audio.filename,
-        "duration": estimated_duration,
-        "analysis": audio_analysis
-    }
+    return {"message": "Scene updated successfully", "scene": storyboard[i]}
+
+
+# Retain render style (user confirms a style works)
+@api_router.post("/projects/{project_id}/retain-style")
+async def retain_render_style(project_id: str, style: str = Form(...)):
+    """User confirms a render style works - AI will use it for future scenes"""
+    project = await db.projects.find_one({"id": project_id})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    await db.projects.update_one(
+        {"id": project_id},
+        {"$set": {
+            "retained_render_style": style,
+            "updated_at": datetime.utcnow()
+        }}
+    )
+    
+    # Also save to user preferences for future projects
+    await db.user_preferences.update_one(
+        {"type": "render_style"},
+        {"$set": {"preferred_style": style, "updated_at": datetime.utcnow()}},
+        upsert=True
+    )
+    
+    return {"message": f"Render style '{style}' retained for future use"}
 
 # Lyrics
 @api_router.post("/projects/{project_id}/lyrics")
